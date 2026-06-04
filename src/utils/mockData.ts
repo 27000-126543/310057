@@ -33,23 +33,39 @@ const suppliers = [
 ];
 
 export function generateMedicines(): Medicine[] {
-  return medicineNames.map((m, i) => ({
-    id: generateId(),
-    genericName: m.generic,
-    tradeName: m.trade || m.generic,
-    dosageForm: dosageForms[i % dosageForms.length],
-    specification: `${(i + 1) * 10}mg * ${10 + i * 2}片`,
-    manufacturer: manufacturers[i % manufacturers.length],
-    approvalNumber: `国药准字H${(1000000 + i * 1234).toString()}`,
-    storageCondition: i % 3 === 0 ? 'cold' : i % 3 === 1 ? 'cool' : 'normal',
-    isHighRisk: m.highRisk || false,
-    category: m.category,
-    minStock: 50 + i * 10,
-    maxStock: 500 + i * 50,
-    unit: '盒',
-    price: Math.round((10 + i * 5 + Math.random() * 50) * 100) / 100,
-    createdAt: formatDate(new Date(2024, 0, 1 + i)),
-  }));
+  return medicineNames.map((m, i) => {
+    const baseUsage = 80 + i * 20 + Math.floor(Math.random() * 50);
+    const seasonalVariation = [
+      baseUsage * (0.8 + Math.random() * 0.2),
+      baseUsage * (0.9 + Math.random() * 0.2),
+      baseUsage * (1.0 + Math.random() * 0.3),
+      baseUsage * (1.1 + Math.random() * 0.2),
+      baseUsage * (1.2 + Math.random() * 0.3),
+      baseUsage * (1.3 + Math.random() * 0.2),
+    ];
+    const monthlyUsage = seasonalVariation.map(v => Math.round(v));
+    const turnoverRate = 4 + Math.random() * 5;
+
+    return {
+      id: generateId(),
+      genericName: m.generic,
+      tradeName: m.trade || m.generic,
+      dosageForm: dosageForms[i % dosageForms.length],
+      specification: `${(i + 1) * 10}mg * ${10 + i * 2}片`,
+      manufacturer: manufacturers[i % manufacturers.length],
+      approvalNumber: `国药准字H${(1000000 + i * 1234).toString()}`,
+      storageCondition: i % 3 === 0 ? 'cold' : i % 3 === 1 ? 'cool' : 'normal',
+      isHighRisk: m.highRisk || false,
+      category: m.category,
+      minStock: 50 + i * 10,
+      maxStock: 500 + i * 50,
+      unit: '盒',
+      price: Math.round((10 + i * 5 + Math.random() * 50) * 100) / 100,
+      monthlyUsage,
+      turnoverRate: Math.round(turnoverRate * 10) / 10,
+      createdAt: formatDate(new Date(2024, 0, 1 + i)),
+    };
+  });
 }
 
 export function generateSuppliers(): Supplier[] {
@@ -137,11 +153,163 @@ export function generatePrescriptions(medicines: Medicine[]): Prescription[] {
   const departments = ['内科', '外科', '儿科', '妇产科', '心内科', '呼吸科', '消化科', '骨科'];
   const doctors = ['王医生', '李医生', '张医生', '刘医生', '陈医生', '杨医生'];
   const floors = ['1楼调剂台', '2楼调剂台', '3楼调剂台', '4楼调剂台', '5楼调剂台', '6楼调剂台'];
-  const patientNames = ['张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十', '郑十一', '冯十二'];
+  const patientNames = ['张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十', '郑十一', '冯十二', '陈小明', '刘小红', '王小宝', '李小丽'];
 
-  return Array.from({ length: 20 }, (_, i) => {
+  const amoxicillin = medicines.find(m => m.genericName === '阿莫西林胶囊');
+  const ibuprofen = medicines.find(m => m.genericName === '布洛芬缓释胶囊');
+  const omeprazole = medicines.find(m => m.genericName === '奥美拉唑肠溶胶囊');
+  const nifedipine = medicines.find(m => m.genericName === '硝苯地平控释片');
+  const metformin = medicines.find(m => m.genericName === '盐酸二甲双胍片');
+  const atorvastatin = medicines.find(m => m.genericName === '阿托伐他汀钙片');
+  const ceftriaxone = medicines.find(m => m.genericName === '注射用头孢曲松钠');
+  const dexamethasone = medicines.find(m => m.genericName === '地塞米松磷酸钠注射液');
+  const loratadine = medicines.find(m => m.genericName === '氯雷他定片');
+  const warfarin = medicines.find(m => m.genericName === '华法林') || ibuprofen;
+  const aspirin = ibuprofen;
+  const furosemide = medicines.find(m => m.genericName === '呋塞米') || omeprazole;
+  const digoxin = medicines.find(m => m.genericName === '地高辛') || nifedipine;
+
+  const specialPrescriptions = [
+    {
+      patientName: '王小宝',
+      patientAge: 4,
+      patientWeight: 18,
+      patientGender: 'male' as const,
+      department: '儿科',
+      items: [
+        { medicine: amoxicillin, quantity: 250, dosage: '250mg', frequency: '每日3次', days: 7 },
+        { medicine: ibuprofen, quantity: 100, dosage: '100mg', frequency: '每日2次', days: 3 },
+      ],
+      note: '儿童患者，含阿莫西林+布洛芬正常组合'
+    },
+    {
+      patientName: '刘小红',
+      patientAge: 6,
+      patientWeight: 22,
+      patientGender: 'female' as const,
+      department: '儿科',
+      items: [
+        { medicine: amoxicillin, quantity: 500, dosage: '500mg', frequency: '每日3次', days: 7 },
+        { medicine: ceftriaxone, quantity: 1, dosage: '1g', frequency: '每日1次', days: 3 },
+      ],
+      note: '青霉素+头孢菌素，存在交叉过敏风险'
+    },
+    {
+      patientName: '李小明',
+      patientAge: 3,
+      patientWeight: 14,
+      patientGender: 'male' as const,
+      department: '儿科',
+      items: [
+        { medicine: ibuprofen, quantity: 200, dosage: '200mg', frequency: '每日3次', days: 5 },
+      ],
+      note: '儿童布洛芬剂量过大（200mg*3=600mg/天，40mg/kg*14kg=560mg上限）'
+    },
+    {
+      patientName: '张大爷',
+      patientAge: 72,
+      patientWeight: 65,
+      patientGender: 'male' as const,
+      department: '心内科',
+      items: [
+        { medicine: warfarin, quantity: 5, dosage: '5mg', frequency: '每日1次', days: 30 },
+        { medicine: aspirin, quantity: 100, dosage: '100mg', frequency: '每日1次', days: 30 },
+      ],
+      note: '华法林+阿司匹林，出血风险'
+    },
+    {
+      patientName: '王奶奶',
+      patientAge: 68,
+      patientWeight: 58,
+      patientGender: 'female' as const,
+      department: '心内科',
+      items: [
+        { medicine: digoxin, quantity: 0.25, dosage: '0.25mg', frequency: '每日1次', days: 30 },
+        { medicine: furosemide, quantity: 20, dosage: '20mg', frequency: '每日1次', days: 30 },
+        { medicine: nifedipine, quantity: 30, dosage: '30mg', frequency: '每日1次', days: 30 },
+      ],
+      note: '地高辛+呋塞米（低钾风险）+硝苯地平（升高地高辛浓度）'
+    },
+    {
+      patientName: '刘叔',
+      patientAge: 55,
+      patientWeight: 75,
+      patientGender: 'male' as const,
+      department: '心内科',
+      items: [
+        { medicine: ibuprofen, quantity: 300, dosage: '300mg', frequency: '每日2次', days: 14 },
+        { medicine: nifedipine, quantity: 30, dosage: '30mg', frequency: '每日1次', days: 30 },
+        { medicine: atorvastatin, quantity: 20, dosage: '20mg', frequency: '每晚1次', days: 30 },
+      ],
+      note: '布洛芬+硝苯地平（血压过低风险）'
+    },
+    {
+      patientName: '陈阿姨',
+      patientAge: 62,
+      patientWeight: 60,
+      patientGender: 'female' as const,
+      department: '内分泌科',
+      items: [
+        { medicine: metformin, quantity: 500, dosage: '500mg', frequency: '每日3次', days: 30 },
+        { medicine: atorvastatin, quantity: 20, dosage: '20mg', frequency: '每晚1次', days: 30 },
+      ],
+      note: '糖尿病常规用药'
+    },
+    {
+      patientName: '赵大哥',
+      patientAge: 45,
+      patientWeight: 80,
+      patientGender: 'male' as const,
+      department: '消化科',
+      items: [
+        { medicine: omeprazole, quantity: 20, dosage: '20mg', frequency: '每日1次', days: 14 },
+        { medicine: loratadine, quantity: 10, dosage: '10mg', frequency: '每日1次', days: 7 },
+      ],
+      note: '奥美拉唑+氯雷他定，轻度相互作用'
+    },
+  ];
+
+  const prescriptions: Prescription[] = [];
+
+  specialPrescriptions.forEach((sp, i) => {
+    const items = sp.items
+      .filter(item => item.medicine)
+      .map(item => ({
+        id: generateId(),
+        medicineId: item.medicine!.id,
+        medicineName: item.medicine!.genericName,
+        specification: item.medicine!.specification,
+        quantity: item.quantity,
+        dosage: item.dosage,
+        frequency: item.frequency,
+        days: item.days,
+      }));
+
+    prescriptions.push({
+      id: generateId(),
+      prescriptionNo: `RX${20240100 + i}`,
+      patientId: `P${20000 + i}`,
+      patientName: sp.patientName,
+      patientAge: sp.patientAge,
+      patientWeight: sp.patientWeight,
+      patientGender: sp.patientGender,
+      department: sp.department,
+      doctor: doctors[i % doctors.length],
+      items,
+      status: i < 6 ? 'pending' : ['reviewed', 'dispensing', 'completed'][i % 3] as Prescription['status'],
+      warnings: [],
+      dispatcher: i >= 7 ? '调剂药师A' : undefined,
+      reviewer: i >= 6 ? '审核药师B' : undefined,
+      floorStation: floors[i % floors.length],
+      createdAt: formatDateTime(new Date(2024, 5, 15 + Math.floor(i / 3), 8 + (i % 8), (i * 15) % 60)),
+      dispensedAt: i >= 7 ? formatDateTime(new Date(2024, 5, 15 + Math.floor(i / 3), 9 + (i % 8), (i * 15) % 60)) : undefined,
+    });
+  });
+
+  for (let i = specialPrescriptions.length; i < 25; i++) {
     const numItems = 1 + (i % 3);
-    const items = medicines.slice(i % (medicines.length - numItems), (i % (medicines.length - numItems)) + numItems).map(m => ({
+    const startIdx = i % (medicines.length - numItems);
+    const items = medicines.slice(startIdx, startIdx + numItems).map(m => ({
       id: generateId(),
       medicineId: m.id,
       medicineName: m.genericName,
@@ -152,35 +320,31 @@ export function generatePrescriptions(medicines: Medicine[]): Prescription[] {
       days: 3 + (i % 4),
     }));
 
-    const hasWarnings = i % 3 === 0;
-    const warnings = hasWarnings ? [
-      {
-        type: 'dosage' as const,
-        severity: 'medium' as const,
-        medicines: items.map(item => item.medicineName),
-        description: '建议确认儿童用量是否适当',
-      },
-    ] : [];
+    const age = i % 3 === 0 ? 5 + Math.floor(Math.random() * 10) : 18 + Math.floor(Math.random() * 70);
+    const weight = age < 18 ? 15 + age * 2.5 : 50 + Math.floor(Math.random() * 40);
 
-    return {
+    prescriptions.push({
       id: generateId(),
-      prescriptionNo: `RX${20240000 + i}`,
+      prescriptionNo: `RX${20240200 + i}`,
       patientId: `P${10000 + i}`,
       patientName: patientNames[i % patientNames.length],
-      patientAge: 5 + Math.floor(Math.random() * 75),
+      patientAge: age,
+      patientWeight: Math.round(weight * 10) / 10,
       patientGender: i % 2 === 0 ? 'male' : 'female',
       department: departments[i % departments.length],
       doctor: doctors[i % doctors.length],
       items,
       status: ['pending', 'reviewed', 'dispensing', 'completed'][i % 4] as Prescription['status'],
-      warnings,
+      warnings: [],
       dispatcher: i % 2 === 0 ? '调剂药师A' : undefined,
       reviewer: i > 2 ? '审核药师B' : undefined,
       floorStation: floors[i % floors.length],
       createdAt: formatDateTime(new Date(2024, 5, 1 + Math.floor(i / 4), 8 + (i % 8), (i * 15) % 60)),
       dispensedAt: i > 4 ? formatDateTime(new Date(2024, 5, 1 + Math.floor(i / 4), 9 + (i % 8), (i * 15) % 60)) : undefined,
-    };
-  });
+    });
+  }
+
+  return prescriptions;
 }
 
 export function generateWarehouseZones(): WarehouseZone[] {

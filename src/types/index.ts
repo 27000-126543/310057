@@ -13,7 +13,31 @@ export interface Medicine {
   maxStock: number;
   unit: string;
   price: number;
+  monthlyUsage: number[];
+  turnoverRate: number;
   createdAt: string;
+}
+
+export interface UsageHistory {
+  medicineId: string;
+  medicineName: string;
+  month: string;
+  quantity: number;
+  department: string;
+}
+
+export interface PurchasePlanItem {
+  medicineId: string;
+  medicineName: string;
+  currentStock: number;
+  avgMonthlyUsage: number;
+  safetyStock: number;
+  nearExpiryStock: number;
+  turnoverRate: number;
+  suggestedQuantity: number;
+  unitPrice: number;
+  subtotal: number;
+  reason: string;
 }
 
 export interface Supplier {
@@ -108,14 +132,16 @@ export interface Prescription {
   patientId: string;
   patientName: string;
   patientAge: number;
+  patientWeight?: number;
   patientGender: 'male' | 'female';
   department: string;
   doctor: string;
   items: PrescriptionItem[];
-  status: 'pending' | 'reviewed' | 'dispensing' | 'completed' | 'returned';
+  status: 'pending' | 'reviewed' | 'dispensing' | 'completed' | 'returned' | 'rejected';
   warnings: PrescriptionWarning[];
   dispatcher?: string;
   reviewer?: string;
+  reviewOpinion?: string;
   floorStation?: string;
   createdAt: string;
   dispensedAt?: string;

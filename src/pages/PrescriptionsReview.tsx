@@ -1,26 +1,44 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   ClipboardList,
   Search,
   CheckCircle,
   XCircle,
   AlertTriangle,
-  FileCheck,
   User,
   Calendar,
   ChevronRight,
-  Eye,
+  Baby,
+  Pill,
+  AlertOctagon,
+  Info,
 } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
-import { Prescription } from '@/types';
-import { statusColors, statusLabels } from '@/config/navConfig';
+import { Prescription, PrescriptionWarning } from '@/types';
+import { calculatePediatricDosage } from '@/utils/validation';
 
 export function PrescriptionsReview() {
-  const { prescriptions, medicines, user, reviewPrescription } = useAppStore();
+  const { prescriptions, user, reviewPrescription, validatePrescription } = useAppStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPrescription, setSelectedPrescription] = useState<Prescription | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [validationWarnings, setValidationWarnings] = useState<PrescriptionWarning[]>([]);
+  const [isValidating, setIsValidating] = useState(false);
+  const [reviewOpinion, setReviewOpinion] = useState('');
+  const [pediatricDosageInfo, setPediatricDosageInfo] = useState<
+    Map<
+      string,
+      {
+        recommendedDose: number;
+        maxDose: number;
+        unit: string;
+        warning?: string;
+        actualDose: number;
+        isOverLimit: boolean;
+      }
+    >
+  >(new Map());
 
   const pendingPrescriptions = useMemo(() => {
     return prescriptions
@@ -36,14 +54,89 @@ export function PrescriptionsReview() {
     );
   }, [pendingPrescriptions, searchQuery]);
 
+  const runValidation = useCallback((prescription: Prescription) => {
+    setIsValidating(true);
+    setTimeout(() => {
+      const warnings = validatePrescription(prescription);
+      setValidationWarnings(warnings);
+
+      const dosageInfo = new Map<
+        string,
+        {
+          recommendedDose: number;
+          maxDose: number;
+          unit: string;
+          warning?: string;
+          actualDose: number;
+          isOverLimit: boolean;
+        }
+      >();
+
+      if (prescription.patientAge < 18 && prescription.patientWeight) {
+        prescription.items.forEach((item) => {
+          const info = calculatePediatricDosage(
+            item.medicineName,
+            prescription.patientAge,
+            prescription.patientWeight!
+          );
+          if (info) {
+            const freqMatch = item.frequency?.match(/(\d+)次/);
+            const dailyTimes = freqMatch ? parseInt(freqMatch[1]) : 1;
+            const actualDose = item.quantity * dailyTimes;
+            dosageInfo.set(item.id, {
+              ...info,
+              actualDose,
+              isOverLimit: actualDose > info.maxDose * 1.2,
+            });
+          }
+        });
+      }
+      setPediatricDosageInfo(dosageInfo);
+      setIsValidating(false);
+    }, 500);
+  }, [validatePrescription]);
+
+  useEffect(() => {
+    if (selectedPrescription && showDetailModal) {
+      runValidation(selectedPrescription);
+    } else {
+      setValidationWarnings([]);
+      setPediatricDosageInfo(new Map());
+      setReviewOpinion('');
+    }
+  }, [selectedPrescription, showDetailModal, runValidation]);
+
+  const allWarnings = useMemo(() => {
+    const combined = [...(selectedPrescription?.warnings || []), ...validationWarnings];
+    const unique = new Map<string, PrescriptionWarning>();
+    combined.forEach((w) => {
+      const key = `${w.type}-${w.medicines.join('-')}`;
+      if (!unique.has(key)) {
+        unique.set(key, w);
+      }
+    });
+    return Array.from(unique.values());
+  }, [selectedPrescription, validationWarnings]);
+
+  const hasHighRiskWarning = allWarnings.some((w) => w.severity === 'high');
+
   const handleReview = (prescription: Prescription, approved: boolean) => {
-    if (approved && prescription.warnings.length > 0) {
+    if (approved && hasHighRiskWarning) {
       const confirmed = window.confirm(
-        `该处方存在 ${prescription.warnings.length} 条用药警示，确定审核通过吗？`
+        `该处方存在 ${allWarnings.filter((w) => w.severity === 'high').length} 条高风险警示，确定审核通过吗？`
       );
       if (!confirmed) return;
     }
-    reviewPrescription(prescription.id, user?.name || '系统', approved ? 'reviewed' : 'rejected');
+    if (!approved && !reviewOpinion.trim()) {
+      alert('请填写驳回意见');
+      return;
+    }
+    reviewPrescription(
+      prescription.id,
+      user?.name || '系统',
+      approved ? 'reviewed' : 'rejected',
+      reviewOpinion || (approved ? '处方审核通过，用药合理' : '驳回')
+    );
     setSelectedPrescription(null);
     setShowDetailModal(false);
   };
@@ -98,13 +191,18 @@ export function PrescriptionsReview() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-500">含警示处方</p>
+              <p className="text-sm text-gray-500">高风险处方</p>
               <p className="text-2xl font-bold text-red-600 mt-1">
-                {pendingPrescriptions.filter((p) => p.warnings.length > 0).length}
+                {
+                  pendingPrescriptions.filter((p) => {
+                    const warnings = validatePrescription(p);
+                    return warnings.some((w) => w.severity === 'high');
+                  }).length
+                }
               </p>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center">
-              <AlertTriangle className="w-6 h-6 text-red-600" />
+              <AlertOctagon className="w-6 h-6 text-red-600" />
             </div>
           </div>
         </div>
@@ -116,7 +214,7 @@ export function PrescriptionsReview() {
                 {
                   prescriptions.filter(
                     (p) =>
-                      p.status === 'reviewed' &&
+                      (p.status === 'reviewed' || p.status === 'rejected') &&
                       new Date(p.createdAt).toDateString() === new Date().toDateString()
                   ).length
                 }
@@ -130,11 +228,13 @@ export function PrescriptionsReview() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-500">平均审核时间</p>
-              <p className="text-2xl font-bold text-blue-600 mt-1">2.3 分钟</p>
+              <p className="text-sm text-gray-500">儿童处方</p>
+              <p className="text-2xl font-bold text-purple-600 mt-1">
+                {pendingPrescriptions.filter((p) => p.patientAge < 18).length}
+              </p>
             </div>
-            <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-              <FileCheck className="w-6 h-6 text-blue-600" />
+            <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
+              <Baby className="w-6 h-6 text-purple-600" />
             </div>
           </div>
         </div>
@@ -269,17 +369,29 @@ export function PrescriptionsReview() {
 
       {showDetailModal && selectedPrescription && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="p-6 border-b border-gray-100">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">
                     处方审核 - {selectedPrescription.prescriptionNo}
                   </h2>
-                  <p className="text-gray-500 mt-1">
-                    {selectedPrescription.patientName} | {selectedPrescription.department} |{' '}
-                    {selectedPrescription.doctor}
-                  </p>
+                  <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
+                    <span className="flex items-center gap-1">
+                      <User className="w-4 h-4" />
+                      {selectedPrescription.patientName} ({selectedPrescription.patientAge}岁
+                      {selectedPrescription.patientWeight
+                        ? `，${selectedPrescription.patientWeight}kg`
+                        : ''}
+                      )
+                    </span>
+                    <span>{selectedPrescription.department}</span>
+                    <span>{selectedPrescription.doctor}</span>
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-4 h-4" />
+                      {new Date(selectedPrescription.createdAt).toLocaleString()}
+                    </span>
+                  </div>
                 </div>
                 <button
                   onClick={() => setShowDetailModal(false)}
@@ -291,95 +403,255 @@ export function PrescriptionsReview() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6">
-              {selectedPrescription.warnings.length > 0 && (
-                <div className="mb-6">
-                  <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                    <AlertTriangle className="w-5 h-5 text-orange-500" />
-                    用药警示
-                  </h3>
-                  <div className="space-y-3">
-                    {selectedPrescription.warnings.map((warning, index) => (
-                      <div
-                        key={index}
-                        className={`p-4 rounded-lg border ${getWarningSeverityClass(
-                          warning.severity
-                        )}`}
-                      >
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="px-2 py-0.5 bg-white rounded text-xs font-medium">
-                            {getWarningTypeText(warning.type)}
+              {isValidating ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
+                  <p className="text-gray-600">正在进行处方智能审核...</p>
+                  <p className="text-sm text-gray-400 mt-1">校验配伍禁忌、重复用药、剂量合理性</p>
+                </div>
+              ) : (
+                <>
+                  {allWarnings.length > 0 && (
+                    <div className="mb-6">
+                      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-orange-500" />
+                        用药警示 ({allWarnings.length}条)
+                        {hasHighRiskWarning && (
+                          <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium">
+                            含高风险
                           </span>
-                          <span className="text-sm font-medium">
-                            {warning.medicines.join(' + ')}
-                          </span>
-                        </div>
-                        <p className="text-sm">{warning.description}</p>
+                        )}
+                      </h3>
+                      <div className="space-y-3">
+                        {allWarnings.map((warning, index) => (
+                          <div
+                            key={index}
+                            className={`p-4 rounded-lg border ${getWarningSeverityClass(
+                              warning.severity
+                            )}`}
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="px-2 py-0.5 bg-white rounded text-xs font-medium">
+                                {getWarningTypeText(warning.type)}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                  warning.severity === 'high'
+                                    ? 'bg-red-200 text-red-800'
+                                    : warning.severity === 'medium'
+                                    ? 'bg-yellow-200 text-yellow-800'
+                                    : 'bg-blue-200 text-blue-800'
+                                }`}
+                              >
+                                {warning.severity === 'high'
+                                  ? '高风险'
+                                  : warning.severity === 'medium'
+                                  ? '中风险'
+                                  : '低风险'}
+                              </span>
+                              <span className="text-sm font-medium">
+                                {warning.medicines.join(' + ')}
+                              </span>
+                            </div>
+                            <p className="text-sm">{warning.description}</p>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    </div>
+                  )}
 
-              <div>
-                <h3 className="font-semibold text-gray-900 mb-3">处方明细</h3>
-                <div className="bg-gray-50 rounded-lg overflow-hidden">
-                  <table className="w-full">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
-                          药品名称
-                        </th>
-                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
-                          规格
-                        </th>
-                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
-                          数量
-                        </th>
-                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
-                          用法用量
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {selectedPrescription.items.map((item) => (
-                        <tr key={item.id} className="hover:bg-white">
-                          <td className="px-4 py-3">
-                            <span className="font-medium text-gray-900">
-                              {item.medicineName}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-center text-gray-600">
-                            {item.specification}
-                          </td>
-                          <td className="px-4 py-3 text-center text-gray-900">
-                            {item.quantity}
-                          </td>
-                          <td className="px-4 py-3 text-center text-gray-600 text-sm">
-                            {item.dosage} {item.frequency}，共{item.days}天
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                  {allWarnings.length === 0 && (
+                    <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="w-5 h-5 text-green-600" />
+                        <span className="text-green-800 font-medium">
+                          处方审核通过，未发现用药禁忌和剂量异常
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedPrescription.patientAge < 18 && pediatricDosageInfo.size > 0 && (
+                    <div className="mb-6">
+                      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                        <Baby className="w-5 h-5 text-purple-500" />
+                        儿童用量自动计算
+                        <span className="text-xs text-gray-500 font-normal">
+                          基于体重{selectedPrescription.patientWeight}kg计算
+                        </span>
+                      </h3>
+                      <div className="bg-gray-50 rounded-lg overflow-hidden">
+                        <table className="w-full">
+                          <thead className="bg-purple-50">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-sm font-medium text-purple-800">
+                                药品名称
+                              </th>
+                              <th className="px-4 py-2 text-center text-sm font-medium text-purple-800">
+                                实际日剂量
+                              </th>
+                              <th className="px-4 py-2 text-center text-sm font-medium text-purple-800">
+                                推荐日剂量
+                              </th>
+                              <th className="px-4 py-2 text-center text-sm font-medium text-purple-800">
+                                最大日剂量
+                              </th>
+                              <th className="px-4 py-2 text-center text-sm font-medium text-purple-800">
+                                单位
+                              </th>
+                              <th className="px-4 py-2 text-center text-sm font-medium text-purple-800">
+                                评估
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-purple-100">
+                            {selectedPrescription.items.map((item) => {
+                              const info = pediatricDosageInfo.get(item.id);
+                              if (!info) return null;
+                              return (
+                                <tr key={item.id} className="hover:bg-white">
+                                  <td className="px-4 py-3 font-medium text-gray-900">
+                                    {item.medicineName}
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    <span
+                                      className={
+                                        info.isOverLimit
+                                          ? 'text-red-600 font-bold'
+                                          : 'text-gray-900'
+                                      }
+                                    >
+                                      {info.actualDose}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-center text-green-600">
+                                    {info.recommendedDose}
+                                  </td>
+                                  <td className="px-4 py-3 text-center text-orange-600">
+                                    {info.maxDose}
+                                  </td>
+                                  <td className="px-4 py-3 text-center text-gray-600 text-sm">
+                                    {info.unit}
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    {info.warning ? (
+                                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
+                                        {info.warning}
+                                      </span>
+                                    ) : info.isOverLimit ? (
+                                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
+                                        剂量超标
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                        剂量合理
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                      <Pill className="w-5 h-5 text-blue-500" />
+                      处方明细
+                    </h3>
+                    <div className="bg-gray-50 rounded-lg overflow-hidden">
+                      <table className="w-full">
+                        <thead className="bg-gray-100">
+                          <tr>
+                            <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">
+                              药品名称
+                            </th>
+                            <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
+                              规格
+                            </th>
+                            <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
+                              数量
+                            </th>
+                            <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">
+                              用法用量
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {selectedPrescription.items.map((item) => (
+                            <tr key={item.id} className="hover:bg-white">
+                              <td className="px-4 py-3">
+                                <span className="font-medium text-gray-900">
+                                  {item.medicineName}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-center text-gray-600">
+                                {item.specification}
+                              </td>
+                              <td className="px-4 py-3 text-center text-gray-900">
+                                {item.quantity}
+                              </td>
+                              <td className="px-4 py-3 text-center text-gray-600 text-sm">
+                                {item.dosage} {item.frequency}，共{item.days}天
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="mt-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      审核意见
+                    </label>
+                    <textarea
+                      value={reviewOpinion}
+                      onChange={(e) => setReviewOpinion(e.target.value)}
+                      placeholder={
+                        hasHighRiskWarning
+                          ? '存在高风险警示，请详细填写审核意见...'
+                          : '请填写审核意见（驳回时必填）...'
+                      }
+                      className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                      rows={3}
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
-            <div className="p-6 border-t border-gray-100 flex justify-end gap-3">
-              <button
-                onClick={() => handleReview(selectedPrescription, false)}
-                className="px-6 py-2.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors flex items-center gap-2"
-              >
-                <XCircle className="w-5 h-5" />
-                驳回
-              </button>
-              <button
-                onClick={() => handleReview(selectedPrescription, true)}
-                className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-              >
-                <CheckCircle className="w-5 h-5" />
-                审核通过
-              </button>
+            <div className="p-6 border-t border-gray-100 flex justify-between items-center">
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <Info className="w-4 h-4" />
+                <span>
+                  审核药师：{user?.name || '未登录'}
+                </span>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleReview(selectedPrescription, false)}
+                  className="px-6 py-2.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors flex items-center gap-2"
+                >
+                  <XCircle className="w-5 h-5" />
+                  驳回
+                </button>
+                <button
+                  onClick={() => handleReview(selectedPrescription, true)}
+                  disabled={isValidating}
+                  className={`px-6 py-2.5 rounded-lg transition-colors flex items-center gap-2 ${
+                    hasHighRiskWarning
+                      ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  <CheckCircle className="w-5 h-5" />
+                  {hasHighRiskWarning ? '确认通过（含风险）' : '审核通过'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

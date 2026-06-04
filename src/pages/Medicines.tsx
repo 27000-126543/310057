@@ -44,7 +44,7 @@ export const Medicines = () => {
     return { total, batches };
   };
 
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<Omit<Medicine, 'id' | 'createdAt'>>({
     genericName: '',
     tradeName: '',
     dosageForm: '片剂',
@@ -58,6 +58,8 @@ export const Medicines = () => {
     maxStock: 500,
     unit: '盒',
     price: 0,
+    monthlyUsage: [0, 0, 0, 0, 0, 0],
+    turnoverRate: 5.0,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -87,6 +89,8 @@ export const Medicines = () => {
       maxStock: 500,
       unit: '盒',
       price: 0,
+      monthlyUsage: [0, 0, 0, 0, 0, 0],
+      turnoverRate: 5.0,
     });
   };
 
@@ -106,6 +110,8 @@ export const Medicines = () => {
       maxStock: medicine.maxStock,
       unit: medicine.unit,
       price: medicine.price,
+      monthlyUsage: medicine.monthlyUsage || [0, 0, 0, 0, 0, 0],
+      turnoverRate: medicine.turnoverRate || 5.0,
     });
     setShowModal(true);
   };

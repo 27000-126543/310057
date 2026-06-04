@@ -10,6 +10,8 @@ import {
   MonitorRecord,
   ReturnRecord,
   User,
+  PurchasePlanItem,
+  PrescriptionWarning,
 } from '../types';
 import {
   generateMedicines,
@@ -22,6 +24,10 @@ import {
   generateReturnRecords,
   getDemoUsers,
 } from '../utils/mockData';
+import {
+  generateMonthlyPurchasePlan,
+  checkCompatibility,
+} from '../utils/validation';
 
 interface AppState {
   user: User | null;
@@ -36,6 +42,7 @@ interface AppState {
   users: User[];
   sidebarCollapsed: boolean;
   isInitialized: boolean;
+  alertLogs: { id: string; zoneId: string; zoneName: string; alertType: string; message: string; timestamp: string; handled: boolean; handledBy?: string; handledAt?: string }[];
 
   login: (username: string, password: string) => boolean;
   logout: () => void;
@@ -53,6 +60,9 @@ interface AppState {
   addPurchaseOrder: (order: Omit<PurchaseOrder, 'id' | 'createdAt'>) => void;
   updatePurchaseOrder: (id: string, order: Partial<PurchaseOrder>) => void;
   approvePurchaseOrder: (orderId: string, level: 1 | 2, approver: string, opinion: string, status: 'approved' | 'rejected') => void;
+  generateMonthlyPurchasePlan: () => PurchasePlanItem[];
+  sendOrderToSupplier: (orderId: string) => boolean;
+  updateOrderStatus: (orderId: string, status: PurchaseOrder['status']) => void;
 
   addInventoryBatch: (batch: Omit<InventoryBatch, 'id' | 'receivedAt'>) => void;
   updateInventoryBatch: (id: string, batch: Partial<InventoryBatch>) => void;
@@ -60,18 +70,22 @@ interface AppState {
 
   addPrescription: (prescription: Omit<Prescription, 'id' | 'createdAt'>) => void;
   updatePrescription: (id: string, prescription: Partial<Prescription>) => void;
-  reviewPrescription: (id: string, reviewer: string, status: 'reviewed' | 'rejected') => void;
+  reviewPrescription: (id: string, reviewer: string, status: 'reviewed' | 'rejected', opinion?: string) => void;
   dispensePrescription: (id: string, dispatcher: string, batchAssignments: { itemId: string; batchId: string; batchNumber: string }[]) => void;
+  validatePrescription: (prescription: Prescription) => PrescriptionWarning[];
 
   updateMonitorData: (zoneId: string, temperature: number, humidity: number) => void;
   addMonitorRecord: (record: Omit<MonitorRecord, 'id'>) => void;
   handleAlert: (recordId: string, handler: string) => void;
+  addAlertLog: (alert: Omit<AppState['alertLogs'][0], 'id' | 'timestamp' | 'handled'>) => void;
+  handleAlertLog: (alertId: string, handler: string) => void;
 
   addReturnRecord: (record: Omit<ReturnRecord, 'id' | 'createdAt'>) => void;
   updateReturnRecord: (id: string, record: Partial<ReturnRecord>) => void;
   approveReturn: (id: string, operator: string) => void;
 
   initializeData: () => void;
+  resetData: () => void;
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
@@ -93,6 +107,7 @@ export const useAppStore = create<AppState>()(
       users: [],
       sidebarCollapsed: false,
       isInitialized: false,
+      alertLogs: [],
 
       login: (username: string, password: string) => {
         const users = getDemoUsers();
@@ -203,6 +218,35 @@ export const useAppStore = create<AppState>()(
         });
       },
 
+      generateMonthlyPurchasePlan: () => {
+        const { medicines, inventoryBatches } = get();
+        return generateMonthlyPurchasePlan(medicines, inventoryBatches);
+      },
+
+      sendOrderToSupplier: (orderId) => {
+        set(state => {
+          const order = state.purchaseOrders.find(o => o.id === orderId);
+          if (!order || order.status !== 'approved') return state;
+
+          console.log(`[订单通知] 已向供应商 ${order.supplierName} 发送订货通知，订单号: ${order.orderNo}`);
+
+          return {
+            purchaseOrders: state.purchaseOrders.map(o =>
+              o.id === orderId ? { ...o, status: 'in_transit' } : o
+            ),
+          };
+        });
+        return true;
+      },
+
+      updateOrderStatus: (orderId, status) => {
+        set(state => ({
+          purchaseOrders: state.purchaseOrders.map(o =>
+            o.id === orderId ? { ...o, status } : o
+          ),
+        }));
+      },
+
       addInventoryBatch: (batch) => {
         const newBatch: InventoryBatch = {
           ...batch,
@@ -241,12 +285,27 @@ export const useAppStore = create<AppState>()(
         }));
       },
 
-      reviewPrescription: (id, reviewer, status) => {
+      reviewPrescription: (id, reviewer, status, opinion) => {
         set(state => ({
           prescriptions: state.prescriptions.map(p =>
-            p.id === id ? { ...p, status: status === 'reviewed' ? 'reviewed' : p.status, reviewer } : p
+            p.id === id ? { 
+              ...p, 
+              status: status === 'reviewed' ? 'reviewed' : 'rejected', 
+              reviewer,
+              reviewOpinion: opinion 
+            } : p
           ),
         }));
+      },
+
+      validatePrescription: (prescription) => {
+        const { medicines } = get();
+        return checkCompatibility(
+          prescription.items,
+          medicines,
+          prescription.patientAge,
+          prescription.patientWeight
+        );
       },
 
       dispensePrescription: (id, dispatcher, batchAssignments) => {
@@ -299,6 +358,26 @@ export const useAppStore = create<AppState>()(
         set(state => ({
           monitorRecords: state.monitorRecords.map(r =>
             r.id === recordId ? { ...r, handled: true, handledBy: handler, handledAt: formatDateTime(new Date()) } : r
+          ),
+        }));
+      },
+
+      addAlertLog: (alert) => {
+        const newAlert = {
+          ...alert,
+          id: generateId(),
+          timestamp: formatDateTime(new Date()),
+          handled: false,
+        };
+        set(state => ({
+          alertLogs: [newAlert, ...state.alertLogs].slice(0, 200),
+        }));
+      },
+
+      handleAlertLog: (alertId, handler) => {
+        set(state => ({
+          alertLogs: state.alertLogs.map(a =>
+            a.id === alertId ? { ...a, handled: true, handledBy: handler, handledAt: formatDateTime(new Date()) } : a
           ),
         }));
       },
@@ -364,6 +443,30 @@ export const useAppStore = create<AppState>()(
           returnRecords,
           users,
           isInitialized: true,
+          alertLogs: [],
+        });
+      },
+
+      resetData: () => {
+        const medicines = generateMedicines();
+        const suppliers = generateSuppliers();
+        const warehouseZones = generateWarehouseZones();
+        const purchaseOrders = generatePurchaseOrders(medicines, suppliers);
+        const inventoryBatches = generateInventoryBatches(medicines, suppliers);
+        const prescriptions = generatePrescriptions(medicines);
+        const monitorRecords = generateMonitorRecords(warehouseZones);
+        const returnRecords = generateReturnRecords(prescriptions, inventoryBatches);
+
+        set({
+          medicines,
+          suppliers,
+          purchaseOrders,
+          inventoryBatches,
+          prescriptions,
+          warehouseZones,
+          monitorRecords,
+          returnRecords,
+          alertLogs: [],
         });
       },
     }),
@@ -379,6 +482,7 @@ export const useAppStore = create<AppState>()(
         warehouseZones: state.warehouseZones,
         monitorRecords: state.monitorRecords.slice(0, 100),
         returnRecords: state.returnRecords,
+        alertLogs: state.alertLogs.slice(0, 50),
         isInitialized: state.isInitialized,
       }),
     }
