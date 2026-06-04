@@ -12,6 +12,11 @@ import path from 'path'
 import dotenv from 'dotenv'
 import { fileURLToPath } from 'url'
 import authRoutes from './routes/auth.js'
+import purchaseRoutes from './routes/purchase.js'
+import monitorRoutes from './routes/monitor.js'
+import prescriptionRoutes from './routes/prescriptions.js'
+import statisticsRoutes from './routes/statistics.js'
+import { initDatabase } from './db/index.js'
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url)
@@ -26,10 +31,17 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+// Initialize database
+initDatabase()
+
 /**
  * API Routes
  */
 app.use('/api/auth', authRoutes)
+app.use('/api/purchase', purchaseRoutes)
+app.use('/api/monitor', monitorRoutes)
+app.use('/api/prescriptions', prescriptionRoutes)
+app.use('/api/statistics', statisticsRoutes)
 
 /**
  * health

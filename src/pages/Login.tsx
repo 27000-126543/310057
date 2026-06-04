@@ -2,34 +2,41 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pill, Lock, User, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
-import { getDemoUsers } from '../utils/mockData';
+import { authApi } from '../services/api';
 
 export const Login = () => {
   const navigate = useNavigate();
-  const { login, initializeData } = useAppStore();
+  const { setUser } = useAppStore();
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('123456');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const demoUsers = getDemoUsers();
+  const demoUsers = [
+    { username: 'admin', name: '系统管理员', roleName: '管理员' },
+    { username: 'pharma_head', name: '张主任', roleName: '药学部主任' },
+    { username: 'hospital_head', name: '李院长', roleName: '分管院长' },
+    { username: 'pharmacist1', name: '王药师', roleName: '药师' },
+  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      initializeData();
-      const success = login(username, password);
-      if (success) {
+    try {
+      const response = await authApi.login(username, password);
+      if (response.success) {
+        localStorage.setItem('token', response.data.token);
+        setUser(response.data.user);
         navigate('/dashboard');
-      } else {
-        setError('用户名或密码错误');
       }
+    } catch (err: any) {
+      setError(err.message || '用户名或密码错误');
+    } finally {
       setIsLoading(false);
-    }, 500);
+    }
   };
 
   return (
