@@ -11,21 +11,53 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { useAppStore } from '@/stores/appStore';
+import { monitorApi } from '@/services/api';
 import { checkTemperatureStatus, checkHumidityStatus } from '@/utils/validation';
 
+interface WarehouseZone {
+  id: string;
+  name: string;
+  minTemp: number;
+  maxTemp: number;
+  minHumidity: number;
+  maxHumidity: number;
+  currentTemp: number;
+  currentHumidity: number;
+  capacity: number;
+  used: number;
+}
+
+interface MonitorRecord {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  temperature: number;
+  humidity: number;
+  isAlert: boolean;
+  alertType?: string;
+  recordedAt: string;
+  handled: boolean;
+  handledBy?: string;
+  handledAt?: string;
+}
+
+interface AlertLog {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  alertType: string;
+  message: string;
+  timestamp: string;
+  handled: boolean;
+  handledBy?: string;
+  handledAt?: string;
+}
+
 export function MonitorRealtime() {
-  const {
-    warehouseZones,
-    monitorRecords,
-    user,
-    updateMonitorData,
-    addMonitorRecord,
-    handleAlert,
-    alertLogs,
-    addAlertLog,
-    handleAlertLog,
-  } = useAppStore();
+  const [zones, setZones] = useState<WarehouseZone[]>([]);
+  const [records, setRecords] = useState<MonitorRecord[]>([]);
+  const [alerts, setAlerts] = useState<AlertLog[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -42,6 +74,27 @@ export function MonitorRealtime() {
   const [lastUpdateTime, setLastUpdateTime] = useState(new Date());
   const audioContextRef = useRef<AudioContext | null>(null);
   const alertedZonesRef = useRef<Set<string>>(new Set());
+
+  const loadData = useCallback(async () => {
+    try {
+      const [zonesRes, recordsRes, alertsRes] = await Promise.all([
+        monitorApi.getZones(),
+        monitorApi.getRecords({ limit: 50 }),
+        monitorApi.getAlerts({ limit: 50 }),
+      ]);
+      setZones(zonesRes.data || []);
+      setRecords(recordsRes.data || []);
+      setAlerts(alertsRes.data || []);
+    } catch (error) {
+      console.error('加载监控数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const playAlarmSound = useCallback(() => {
     if (!audioContextRef.current) {
@@ -122,81 +175,76 @@ export function MonitorRealtime() {
         alertType === 'temp' ? '温度超标' : alertType === 'humidity' ? '湿度超标' : '温湿度超标';
       showBrowserNotification(`【报警】${zoneName} - ${alertTypeText}`, message);
 
-      addAlertLog({
-        zoneId,
-        zoneName,
-        alertType,
-        message,
-      });
-
       setTimeout(() => {
         alertedZonesRef.current.delete(zoneId);
       }, 30000);
     },
-    [playAlarmSound, showBrowserNotification, addAlertLog]
+    [playAlarmSound, showBrowserNotification]
   );
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      warehouseZones.forEach((zone) => {
-        let tempVariation = (Math.random() - 0.5) * 2;
-        let humidityVariation = (Math.random() - 0.5) * 5;
+    if (zones.length === 0) return;
 
-        if (Math.random() < 0.15) {
-          tempVariation = (Math.random() * 6 - 3) * 2;
+    const interval = setInterval(async () => {
+      try {
+        const updatedZones = [...zones];
+        for (let i = 0; i < updatedZones.length; i++) {
+          const zone = updatedZones[i];
+          let tempVariation = (Math.random() - 0.5) * 2;
+          let humidityVariation = (Math.random() - 0.5) * 5;
+
+          if (Math.random() < 0.15) {
+            tempVariation = (Math.random() * 6 - 3) * 2;
+          }
+          if (Math.random() < 0.1) {
+            humidityVariation = (Math.random() * 15 - 7.5) * 2;
+          }
+
+          const newTemp = Math.max(
+            -10,
+            Math.min(40, Math.round((zone.currentTemp + tempVariation) * 10) / 10)
+          );
+          const newHumidity = Math.max(
+            10,
+            Math.min(95, Math.round((zone.currentHumidity + humidityVariation) * 10) / 10)
+          );
+
+          try {
+            const res = await monitorApi.updateZoneData(zone.id, newTemp, newHumidity);
+            if (res.success && res.data) {
+              updatedZones[i] = { ...zone, currentTemp: newTemp, currentHumidity: newHumidity };
+
+              if (res.data.alert) {
+                triggerAlarm(
+                  zone.id,
+                  zone.name,
+                  res.data.alert.alertType,
+                  res.data.alert.message,
+                  newTemp,
+                  newHumidity
+                );
+              }
+            }
+          } catch (err) {
+            console.error('更新库区数据失败:', err);
+          }
         }
-        if (Math.random() < 0.1) {
-          humidityVariation = (Math.random() * 15 - 7.5) * 2;
-        }
+        setZones(updatedZones);
+        setLastUpdateTime(new Date());
 
-        const newTemp = Math.max(
-          -10,
-          Math.min(40, Math.round((zone.currentTemp + tempVariation) * 10) / 10)
-        );
-        const newHumidity = Math.max(
-          10,
-          Math.min(95, Math.round((zone.currentHumidity + humidityVariation) * 10) / 10)
-        );
-
-        updateMonitorData(zone.id, newTemp, newHumidity);
-
-        const tempStatus = checkTemperatureStatus(newTemp, zone.minTemp, zone.maxTemp);
-        const humidityStatus = checkHumidityStatus(newHumidity, zone.minHumidity, zone.maxHumidity);
-
-        if (tempStatus.status === 'danger' || humidityStatus.status === 'danger') {
-          const alertType =
-            tempStatus.status === 'danger' && humidityStatus.status === 'danger'
-              ? 'both'
-              : tempStatus.status === 'danger'
-              ? 'temp'
-              : 'humidity';
-
-          const message =
-            alertType === 'both'
-              ? `${tempStatus.message}，${humidityStatus.message}`
-              : alertType === 'temp'
-              ? tempStatus.message
-              : humidityStatus.message;
-
-          addMonitorRecord({
-            zoneId: zone.id,
-            zoneName: zone.name,
-            temperature: newTemp,
-            humidity: newHumidity,
-            isAlert: true,
-            alertType,
-            recordedAt: new Date().toISOString(),
-            handled: false,
-          });
-
-          triggerAlarm(zone.id, zone.name, alertType, message, newTemp, newHumidity);
-        }
-      });
-      setLastUpdateTime(new Date());
+        const [recordsRes, alertsRes] = await Promise.all([
+          monitorApi.getRecords({ limit: 50 }),
+          monitorApi.getAlerts({ limit: 50 }),
+        ]);
+        setRecords(recordsRes.data || []);
+        setAlerts(alertsRes.data || []);
+      } catch (err) {
+        console.error('定时更新失败:', err);
+      }
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [warehouseZones, updateMonitorData, addMonitorRecord, triggerAlarm]);
+  }, [zones, triggerAlarm]);
 
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -211,30 +259,42 @@ export function MonitorRealtime() {
     }
   }, [isAlarmPlaying]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    warehouseZones.forEach((zone) => {
-      const tempVariation = (Math.random() - 0.5) * 3;
-      const humidityVariation = (Math.random() - 0.5) * 8;
-      const newTemp = Math.round((zone.currentTemp + tempVariation) * 10) / 10;
-      const newHumidity = Math.round((zone.currentHumidity + humidityVariation) * 10) / 10;
-      updateMonitorData(zone.id, newTemp, newHumidity);
-    });
+    await loadData();
     setLastUpdateTime(new Date());
     setTimeout(() => setIsRefreshing(false), 1000);
   };
 
-  const handleResolveAlert = (recordId: string) => {
-    handleAlert(recordId, user?.name || '系统');
+  const handleResolveAlert = async (recordId: string) => {
+    try {
+      await monitorApi.handleRecord(recordId, '系统');
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === recordId ? { ...r, handled: true, handledBy: '系统', handledAt: new Date().toISOString() } : r
+        )
+      );
+    } catch (error) {
+      console.error('处理报警失败:', error);
+    }
   };
 
-  const handleResolveAlertLog = (alertId: string) => {
-    handleAlertLog(alertId, user?.name || '系统');
+  const handleResolveAlertLog = async (alertId: string) => {
+    try {
+      await monitorApi.handleAlert(alertId, '系统');
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alertId ? { ...a, handled: true, handledBy: '系统', handledAt: new Date().toISOString() } : a
+        )
+      );
+    } catch (error) {
+      console.error('处理报警日志失败:', error);
+    }
   };
 
   const [activeTab, setActiveTab] = useState<'records' | 'logs'>('records');
 
-  const unhandledAlertLogs = alertLogs.filter((a) => !a.handled);
+  const unhandledAlerts = alerts.filter((a) => !a.handled);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -270,6 +330,14 @@ export function MonitorRealtime() {
         return '其他';
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6">
@@ -363,12 +431,12 @@ export function MonitorRealtime() {
                   稍后处理
                 </button>
                 <button
-                  onClick={() => {
-                    const record = monitorRecords.find(
+                  onClick={async () => {
+                    const record = records.find(
                       (r) => r.zoneId === alertModal.zoneId && !r.handled
                     );
                     if (record) {
-                      handleResolveAlert(record.id);
+                      await handleResolveAlert(record.id);
                     }
                     setAlertModal(null);
                   }}
@@ -407,7 +475,7 @@ export function MonitorRealtime() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">监控库区</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{warehouseZones.length}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{zones.length}</p>
             </div>
             <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
               <MapPin className="w-6 h-6 text-blue-600" />
@@ -420,7 +488,7 @@ export function MonitorRealtime() {
               <p className="text-sm text-gray-500">正常运行</p>
               <p className="text-2xl font-bold text-green-600 mt-1">
                 {
-                  warehouseZones.filter((zone) => {
+                  zones.filter((zone) => {
                     const tempStatus = checkTemperatureStatus(
                       zone.currentTemp,
                       zone.minTemp,
@@ -445,7 +513,7 @@ export function MonitorRealtime() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">待处理报警</p>
-              <p className="text-2xl font-bold text-red-600 mt-1">{unhandledAlertLogs.length}</p>
+              <p className="text-2xl font-bold text-red-600 mt-1">{unhandledAlerts.length}</p>
             </div>
             <div
               className={`w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center ${
@@ -472,7 +540,7 @@ export function MonitorRealtime() {
       </div>
 
       <div className="grid grid-cols-3 gap-6 mb-6">
-        {warehouseZones.map((zone) => {
+        {zones.map((zone) => {
           const tempStatus = checkTemperatureStatus(
             zone.currentTemp,
             zone.minTemp,
@@ -612,17 +680,17 @@ export function MonitorRealtime() {
                 }`}
               >
                 报警日志
-                {unhandledAlertLogs.length > 0 && (
+                {unhandledAlerts.length > 0 && (
                   <span className="ml-2 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full">
-                    {unhandledAlertLogs.length}
+                    {unhandledAlerts.length}
                   </span>
                 )}
               </button>
             </div>
             <span className="text-sm text-gray-500">
               {activeTab === 'records'
-                ? `最近 ${monitorRecords.slice(0, 20).length} 条监测记录`
-                : `共 ${alertLogs.length} 条报警日志`}
+                ? `最近 ${records.slice(0, 20).length} 条监测记录`
+                : `共 ${alerts.length} 条报警日志`}
             </span>
           </div>
         </div>
@@ -642,7 +710,7 @@ export function MonitorRealtime() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {monitorRecords.slice(0, 20).map((record) => (
+                {records.slice(0, 20).map((record) => (
                   <tr key={record.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {new Date(record.recordedAt).toLocaleString()}
@@ -721,7 +789,7 @@ export function MonitorRealtime() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {alertLogs.slice(0, 50).map((alert) => (
+                {alerts.slice(0, 50).map((alert) => (
                   <tr
                     key={alert.id}
                     className={`hover:bg-gray-50 ${!alert.handled ? 'bg-red-50/50' : ''}`}

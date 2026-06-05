@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Monitor,
   Thermometer,
@@ -11,21 +11,72 @@ import {
   AlertTriangle,
   Activity,
 } from 'lucide-react';
-import { useAppStore } from '@/stores/appStore';
+import { statisticsApi, monitorApi } from '@/services/api';
 import ReactECharts from 'echarts-for-react';
 
-export function StatisticsVisual() {
-  const {
-    medicines,
-    suppliers,
-    purchaseOrders,
-    inventoryBatches,
-    prescriptions,
-    warehouseZones,
-    monitorRecords,
-  } = useAppStore();
+interface ZoneData {
+  id: string;
+  name: string;
+  minTemp: number;
+  maxTemp: number;
+  minHumidity: number;
+  maxHumidity: number;
+  currentTemp: number;
+  currentHumidity: number;
+  capacity: number;
+  used: number;
+}
 
+interface OverviewData {
+  medicineCount: number;
+  totalInventoryValue: number;
+  supplierCount: number;
+  totalPurchaseAmount: number;
+  todayPrescriptionCount: number;
+  expiringBatchesCount: number;
+  lowStockMedicinesCount: number;
+}
+
+interface AlertRecord {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  temperature: number;
+  humidity: number;
+  isAlert: boolean;
+  alertType?: string;
+  recordedAt: string;
+  handled: boolean;
+}
+
+export function StatisticsVisual() {
+  const [zones, setZones] = useState<ZoneData[]>([]);
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [alerts, setAlerts] = useState<AlertRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  const loadData = useCallback(async () => {
+    try {
+      const [zonesRes, overviewRes, alertsRes] = await Promise.all([
+        monitorApi.getZones(),
+        statisticsApi.getOverview('month'),
+        monitorApi.getRecords({ isAlert: true, limit: 10 }),
+      ]);
+
+      setZones(zonesRes.data || []);
+      setOverview(overviewRes.data);
+      setAlerts((alertsRes.data || []).filter((r: AlertRecord) => !r.handled));
+    } catch (error) {
+      console.error('加载可视化数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -34,32 +85,12 @@ export function StatisticsVisual() {
     return () => clearInterval(timer);
   }, []);
 
-  const totalInventoryValue = inventoryBatches.reduce((sum, batch) => {
-    const medicine = medicines.find((m) => m.id === batch.medicineId);
-    return sum + (medicine?.price || 0) * batch.quantity;
-  }, 0);
-
-  const completedOrders = purchaseOrders.filter((o) => o.status === 'completed');
-  const totalPurchaseAmount = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
-
-  const todayPrescriptions = prescriptions.filter(
-    (p) => new Date(p.createdAt).toDateString() === new Date().toDateString()
-  ).length;
-
-  const expiringBatches = inventoryBatches.filter((batch) => {
-    const expiry = new Date(batch.expiryDate);
-    const daysToExpiry = Math.ceil(
-      (expiry.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
-    );
-    return daysToExpiry <= 90;
-  }).length;
-
-  const lowStockMedicines = medicines.filter((medicine) => {
-    const totalStock = inventoryBatches
-      .filter((b) => b.medicineId === medicine.id)
-      .reduce((sum, b) => sum + b.quantity, 0);
-    return totalStock < medicine.minStock;
-  }).length;
+  useEffect(() => {
+    const dataTimer = setInterval(() => {
+      loadData();
+    }, 30000);
+    return () => clearInterval(dataTimer);
+  }, [loadData]);
 
   const inventoryTrendOption = {
     tooltip: {
@@ -98,6 +129,18 @@ export function StatisticsVisual() {
     return '#10b981';
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-900">
+        <div className="text-gray-400">加载中...</div>
+      </div>
+    );
+  }
+
+  const totalInventoryValue = overview?.totalInventoryValue || 0;
+  const totalPurchaseAmount = overview?.totalPurchaseAmount || 0;
+  const alertCount = (overview?.expiringBatchesCount || 0) + (overview?.lowStockMedicinesCount || 0);
+
   return (
     <div className="p-6 bg-gray-900 min-h-screen">
       <div className="flex items-center justify-between mb-6">
@@ -121,7 +164,7 @@ export function StatisticsVisual() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-400 text-sm">药品品种</p>
-              <p className="text-3xl font-bold text-white mt-1">{medicines.length}</p>
+              <p className="text-3xl font-bold text-white mt-1">{overview?.medicineCount || 0}</p>
             </div>
             <div className="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center">
               <Pill className="w-6 h-6 text-blue-400" />
@@ -145,7 +188,7 @@ export function StatisticsVisual() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-400 text-sm">供应商</p>
-              <p className="text-3xl font-bold text-white mt-1">{suppliers.length}</p>
+              <p className="text-3xl font-bold text-white mt-1">{overview?.supplierCount || 0}</p>
             </div>
             <div className="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center">
               <User className="w-6 h-6 text-purple-400" />
@@ -169,7 +212,9 @@ export function StatisticsVisual() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-400 text-sm">今日处方</p>
-              <p className="text-3xl font-bold text-orange-400 mt-1">{todayPrescriptions}</p>
+              <p className="text-3xl font-bold text-orange-400 mt-1">
+                {overview?.todayPrescriptionCount || 0}
+              </p>
             </div>
             <div className="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center">
               <TrendingUp className="w-6 h-6 text-orange-400" />
@@ -180,9 +225,7 @@ export function StatisticsVisual() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-400 text-sm">预警数量</p>
-              <p className="text-3xl font-bold text-red-400 mt-1">
-                {expiringBatches + lowStockMedicines}
-              </p>
+              <p className="text-3xl font-bold text-red-400 mt-1">{alertCount}</p>
             </div>
             <div className="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center">
               <AlertTriangle className="w-6 h-6 text-red-400" />
@@ -199,7 +242,7 @@ export function StatisticsVisual() {
               库区温湿度监控
             </h3>
             <div className="space-y-4">
-              {warehouseZones.map((zone) => {
+              {zones.map((zone) => {
                 const usagePercent = (zone.used / zone.capacity) * 100;
                 return (
                   <div key={zone.id} className="bg-gray-700/50 rounded-lg p-4">
@@ -331,31 +374,28 @@ export function StatisticsVisual() {
               实时告警
             </h3>
             <div className="space-y-3 max-h-48 overflow-y-auto">
-              {monitorRecords
-                .filter((r) => r.isAlert && !r.handled)
-                .slice(0, 5)
-                .map((record) => (
-                  <div
-                    key={record.id}
-                    className="flex items-start gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
-                  >
-                    <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="text-sm text-white font-medium">{record.zoneName}</div>
-                      <div className="text-xs text-gray-400">
-                        {record.alertType === 'temp'
-                          ? `温度异常: ${record.temperature}°C`
-                          : record.alertType === 'humidity'
-                          ? `湿度异常: ${record.humidity}%`
-                          : `温湿度异常: ${record.temperature}°C / ${record.humidity}%`}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        {new Date(record.recordedAt).toLocaleTimeString()}
-                      </div>
+              {alerts.slice(0, 5).map((record) => (
+                <div
+                  key={record.id}
+                  className="flex items-start gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
+                >
+                  <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <div className="text-sm text-white font-medium">{record.zoneName}</div>
+                    <div className="text-xs text-gray-400">
+                      {record.alertType === 'temp'
+                        ? `温度异常: ${record.temperature}°C`
+                        : record.alertType === 'humidity'
+                        ? `湿度异常: ${record.humidity}%`
+                        : `温湿度异常: ${record.temperature}°C / ${record.humidity}%`}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      {new Date(record.recordedAt).toLocaleTimeString()}
                     </div>
                   </div>
-                ))}
-              {monitorRecords.filter((r) => r.isAlert && !r.handled).length === 0 && (
+                </div>
+              ))}
+              {alerts.length === 0 && (
                 <div className="text-center py-6 text-gray-500">
                   <Activity className="w-8 h-8 mx-auto mb-2 text-green-500" />
                   暂无告警

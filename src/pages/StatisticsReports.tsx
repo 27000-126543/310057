@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   BarChart3,
   Calendar,
@@ -14,271 +14,192 @@ import {
   BarChart2,
   TrendingUp as TrendingUpIcon,
 } from 'lucide-react';
-import { useAppStore } from '@/stores/appStore';
+import { statisticsApi } from '@/services/api';
 import ReactECharts from 'echarts-for-react';
 import * as XLSX from 'xlsx';
 
+interface OverviewData {
+  totalPurchaseAmount: number;
+  avgTurnoverDays: number;
+  expiringRate: number;
+  expiringValue: number;
+  warningRate: number;
+  warningValue: number;
+  totalInventoryValue: number;
+  prescriptionCount: number;
+  supplierCount: number;
+  medicineCount: number;
+  batchCount: number;
+}
+
+interface MonthlyPurchaseItem {
+  month: string;
+  purchaseAmount: number;
+  prescriptionCount: number;
+}
+
+interface CategoryPurchaseItem {
+  name: string;
+  value: number;
+}
+
+interface SupplierPurchaseItem {
+  name: string;
+  amount: number;
+  count: number;
+}
+
+interface TurnoverItem {
+  name: string;
+  category: string;
+  totalStock: number;
+  dispensed: number;
+  avgMonthlyUsage: number;
+  turnoverDays: number;
+}
+
+interface ExpiryData {
+  expiringRate: string;
+  warningRate: string;
+  totalValue: number;
+  expiringValue: number;
+  warningValue: number;
+}
+
 export function StatisticsReports() {
-  const { medicines, suppliers, purchaseOrders, inventoryBatches, prescriptions } = useAppStore();
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [monthlyData, setMonthlyData] = useState<MonthlyPurchaseItem[]>([]);
+  const [categoryData, setCategoryData] = useState<CategoryPurchaseItem[]>([]);
+  const [supplierData, setSupplierData] = useState<SupplierPurchaseItem[]>([]);
+  const [turnoverData, setTurnoverData] = useState<TurnoverItem[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [selectedPeriod, setSelectedPeriod] = useState<'month' | 'quarter' | 'year'>('month');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [isExporting, setIsExporting] = useState(false);
 
-  const categories = useMemo(() => {
-    const cats = new Set(medicines.map((m) => m.category));
-    return Array.from(cats);
-  }, [medicines]);
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const period = selectedPeriod === 'month' ? 'month' : selectedPeriod === 'quarter' ? 'quarter' : 'year';
+      
+      const [overviewRes, monthlyRes, categoryRes, supplierRes, turnoverRes, categoriesRes] = await Promise.all([
+        statisticsApi.getOverview(period),
+        statisticsApi.getMonthlyPurchase(),
+        statisticsApi.getPurchaseByCategory(period),
+        statisticsApi.getPurchaseBySupplier({ period, limit: 20 }),
+        statisticsApi.getInventoryTurnover({ limit: 15 }),
+        statisticsApi.getCategories(),
+      ]);
 
-  const getDateFilter = useCallback(() => {
-    const now = new Date();
-    let startDate: Date;
-    switch (selectedPeriod) {
-      case 'quarter':
-        startDate = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
-        break;
-      case 'year':
-        startDate = new Date(now.getFullYear(), 0, 1);
-        break;
-      default:
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      setOverview(overviewRes.data);
+      setMonthlyData(monthlyRes.data || []);
+      setCategoryData(categoryRes.data || []);
+      setSupplierData(supplierRes.data || []);
+      setTurnoverData(turnoverRes.data || []);
+      setCategories(categoriesRes.data || []);
+    } catch (error) {
+      console.error('加载统计数据失败:', error);
+    } finally {
+      setLoading(false);
     }
-    return startDate;
   }, [selectedPeriod]);
 
-  const filteredPurchaseOrders = useMemo(() => {
-    const startDate = getDateFilter();
-    return purchaseOrders.filter((order) => {
-      const orderDate = new Date(order.createdAt);
-      return orderDate >= startDate;
-    });
-  }, [purchaseOrders, getDateFilter]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-  const filteredPrescriptions = useMemo(() => {
-    const startDate = getDateFilter();
-    return prescriptions.filter((p) => {
-      const prescDate = new Date(p.createdAt);
-      return prescDate >= startDate;
-    });
-  }, [prescriptions, getDateFilter]);
+  const totalPurchaseAmount = overview?.totalPurchaseAmount || 0;
+  const avgTurnoverDays = overview?.avgTurnoverDays || 0;
 
-  const purchaseBySupplier = useMemo(() => {
-    const supplierData = new Map<string, { name: string; amount: number; count: number }>();
+  const expiryLossRate: ExpiryData = useMemo(() => ({
+    expiringRate: (overview?.expiringRate || 0).toFixed(2),
+    warningRate: (overview?.warningRate || 0).toFixed(2),
+    totalValue: overview?.totalInventoryValue || 0,
+    expiringValue: overview?.expiringValue || 0,
+    warningValue: overview?.warningValue || 0,
+  }), [overview]);
 
-    filteredPurchaseOrders.forEach((order) => {
-      if (order.status === 'completed' || order.status === 'approved' || order.status === 'in_transit') {
-        const existing = supplierData.get(order.supplierId) || {
-          name: order.supplierName,
-          amount: 0,
-          count: 0,
-        };
-        supplierData.set(order.supplierId, {
-          ...existing,
-          amount: existing.amount + order.totalAmount,
-          count: existing.count + 1,
-        });
-      }
-    });
+  const filteredTurnoverData = useMemo(() => {
+    if (selectedCategory === 'all') return turnoverData;
+    return turnoverData.filter((item) => item.category === selectedCategory);
+  }, [turnoverData, selectedCategory]);
 
-    return Array.from(supplierData.values()).sort((a, b) => b.amount - a.amount);
-  }, [filteredPurchaseOrders]);
-
-  const purchaseByCategory = useMemo(() => {
-    const categoryData = new Map<string, number>();
-
-    filteredPurchaseOrders.forEach((order) => {
-      if (order.status === 'completed' || order.status === 'approved' || order.status === 'in_transit') {
-        order.items.forEach((item) => {
-          const medicine = medicines.find((m) => m.id === item.medicineId);
-          if (medicine) {
-            const existing = categoryData.get(medicine.category) || 0;
-            categoryData.set(medicine.category, existing + item.subtotal);
-          }
-        });
-      }
-    });
-
-    return Array.from(categoryData.entries())
-      .map(([name, value]) => ({ name, value: Math.round(value) }))
-      .sort((a, b) => b.value - a.value);
-  }, [filteredPurchaseOrders, medicines]);
-
-  const monthlyData = useMemo(() => {
-    const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
-    const purchaseByMonth = new Array(12).fill(0);
-    const prescriptionByMonth = new Array(12).fill(0);
-
-    const now = new Date();
-    const year = now.getFullYear();
-
-    purchaseOrders.forEach((order) => {
-      const orderDate = new Date(order.createdAt);
-      if (orderDate.getFullYear() === year && order.status === 'completed') {
-        purchaseByMonth[orderDate.getMonth()] += order.totalAmount;
-      }
-    });
-
-    prescriptions.forEach((p) => {
-      const prescDate = new Date(p.createdAt);
-      if (prescDate.getFullYear() === year && p.status === 'completed') {
-        prescriptionByMonth[prescDate.getMonth()] += 1;
-      }
-    });
+  const monthlyPurchaseOption = useMemo(() => {
+    const months = monthlyData.map((d) => d.month);
+    const purchaseAmounts = monthlyData.map((d) => Math.round(d.purchaseAmount / 10000));
+    const prescriptionCounts = monthlyData.map((d) => d.prescriptionCount);
 
     return {
-      months,
-      purchaseAmounts: purchaseByMonth.map((v) => Math.round(v / 10000)),
-      prescriptionCounts: prescriptionByMonth,
-    };
-  }, [purchaseOrders, prescriptions]);
-
-  const turnoverByMedicine = useMemo(() => {
-    return medicines
-      .map((medicine) => {
-        const totalStock = inventoryBatches
-          .filter((b) => b.medicineId === medicine.id)
-          .reduce((sum, b) => sum + b.quantity, 0);
-
-        const dispensed = filteredPrescriptions
-          .filter((p) => p.status === 'completed' || p.status === 'dispensing')
-          .flatMap((p) => p.items)
-          .filter((i) => i.medicineName === medicine.genericName)
-          .reduce((sum, i) => sum + i.quantity, 0);
-
-        const avgMonthlyUsage = medicine.monthlyUsage?.length
-          ? medicine.monthlyUsage.reduce((a, b) => a + b, 0) / medicine.monthlyUsage.length
-          : dispensed / 3;
-
-        const turnoverDays = avgMonthlyUsage > 0 ? Math.round((totalStock / avgMonthlyUsage) * 30) : 0;
-
-        return {
-          name: medicine.genericName,
-          category: medicine.category,
-          totalStock,
-          dispensed,
-          avgMonthlyUsage: Math.round(avgMonthlyUsage),
-          turnoverDays,
-        };
-      })
-      .filter((m) => selectedCategory === 'all' || m.category === selectedCategory)
-      .filter((m) => m.totalStock > 0 || m.dispensed > 0)
-      .sort((a, b) => b.turnoverDays - a.turnoverDays)
-      .slice(0, 15);
-  }, [medicines, inventoryBatches, filteredPrescriptions, selectedCategory]);
-
-  const expiryLossRate = useMemo(() => {
-    const thirtyDaysLater = new Date();
-    thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
-    const ninetyDaysLater = new Date();
-    ninetyDaysLater.setDate(ninetyDaysLater.getDate() + 90);
-
-    let expiringValue = 0;
-    let warningValue = 0;
-    let totalValue = 0;
-
-    inventoryBatches.forEach((batch) => {
-      const medicine = medicines.find((m) => m.id === batch.medicineId);
-      const price = medicine?.price || 0;
-      const value = price * batch.quantity;
-      totalValue += value;
-
-      const expiry = new Date(batch.expiryDate);
-      if (expiry <= thirtyDaysLater) {
-        expiringValue += value;
-      } else if (expiry <= ninetyDaysLater) {
-        warningValue += value;
-      }
-    });
-
-    return {
-      expiringRate: totalValue > 0 ? ((expiringValue / totalValue) * 100).toFixed(2) : '0.00',
-      warningRate: totalValue > 0 ? ((warningValue / totalValue) * 100).toFixed(2) : '0.00',
-      totalValue: Math.round(totalValue),
-      expiringValue: Math.round(expiringValue),
-      warningValue: Math.round(warningValue),
-    };
-  }, [inventoryBatches, medicines]);
-
-  const totalPurchaseAmount = useMemo(() => {
-    return filteredPurchaseOrders
-      .filter((o) => o.status === 'completed')
-      .reduce((sum, o) => sum + o.totalAmount, 0);
-  }, [filteredPurchaseOrders]);
-
-  const avgTurnoverDays = useMemo(() => {
-    const validMedicines = turnoverByMedicine.filter((m) => m.turnoverDays > 0);
-    if (validMedicines.length === 0) return 0;
-    return Math.round(validMedicines.reduce((sum, m) => sum + m.turnoverDays, 0) / validMedicines.length);
-  }, [turnoverByMedicine]);
-
-  const monthlyPurchaseOption = useMemo(() => ({
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: {
-        type: 'cross',
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'cross',
+        },
       },
-    },
-    legend: {
-      data: ['采购金额(万元)', '处方数量'],
-      top: 0,
-    },
-    grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '3%',
-      containLabel: true,
-    },
-    xAxis: {
-      type: 'category',
-      data: monthlyData.months,
-      axisLabel: {
-        fontSize: 12,
+      legend: {
+        data: ['采购金额(万元)', '处方数量'],
+        top: 0,
       },
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: '采购金额(万元)',
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'category',
+        data: months,
         axisLabel: {
-          formatter: '{value}',
+          fontSize: 12,
         },
       },
-      {
-        type: 'value',
-        name: '处方数量',
-        axisLabel: {
-          formatter: '{value}',
+      yAxis: [
+        {
+          type: 'value',
+          name: '采购金额(万元)',
+          axisLabel: {
+            formatter: '{value}',
+          },
         },
-      },
-    ],
-    series: [
-      {
-        name: '采购金额(万元)',
-        type: 'bar',
-        data: monthlyData.purchaseAmounts,
-        itemStyle: {
-          color: '#3b82f6',
-          borderRadius: [4, 4, 0, 0],
+        {
+          type: 'value',
+          name: '处方数量',
+          axisLabel: {
+            formatter: '{value}',
+          },
         },
-        yAxisIndex: 0,
-        barWidth: '40%',
-      },
-      {
-        name: '处方数量',
-        type: 'line',
-        data: monthlyData.prescriptionCounts,
-        itemStyle: {
-          color: '#10b981',
+      ],
+      series: [
+        {
+          name: '采购金额(万元)',
+          type: 'bar',
+          data: purchaseAmounts,
+          itemStyle: {
+            color: '#3b82f6',
+            borderRadius: [4, 4, 0, 0],
+          },
+          yAxisIndex: 0,
+          barWidth: '40%',
         },
-        lineStyle: {
-          width: 3,
+        {
+          name: '处方数量',
+          type: 'line',
+          data: prescriptionCounts,
+          itemStyle: {
+            color: '#10b981',
+          },
+          lineStyle: {
+            width: 3,
+          },
+          symbol: 'circle',
+          symbolSize: 8,
+          yAxisIndex: 1,
         },
-        symbol: 'circle',
-        symbolSize: 8,
-        yAxisIndex: 1,
-      },
-    ],
-  }), [monthlyData]);
+      ],
+    };
+  }, [monthlyData]);
 
   const categoryPurchaseOption = useMemo(() => ({
     tooltip: {
@@ -295,7 +216,7 @@ export function StatisticsReports() {
         type: 'pie',
         radius: ['40%', '70%'],
         center: ['60%', '50%'],
-        data: purchaseByCategory,
+        data: categoryData,
         emphasis: {
           itemStyle: {
             shadowBlur: 10,
@@ -309,7 +230,7 @@ export function StatisticsReports() {
         },
       },
     ],
-  }), [purchaseByCategory]);
+  }), [categoryData]);
 
   const turnoverOption = useMemo(() => ({
     tooltip: {
@@ -333,7 +254,7 @@ export function StatisticsReports() {
     },
     yAxis: {
       type: 'category',
-      data: turnoverByMedicine.map((m) => m.name),
+      data: filteredTurnoverData.map((m) => m.name),
       axisLabel: {
         fontSize: 11,
         interval: 0,
@@ -342,7 +263,7 @@ export function StatisticsReports() {
     series: [
       {
         type: 'bar',
-        data: turnoverByMedicine.map((m) => ({
+        data: filteredTurnoverData.map((m) => ({
           value: m.turnoverDays,
           itemStyle: {
             color: m.turnoverDays > 60 ? '#ef4444' : m.turnoverDays > 30 ? '#f59e0b' : '#10b981',
@@ -356,98 +277,7 @@ export function StatisticsReports() {
         },
       },
     ],
-  }), [turnoverByMedicine]);
-
-  const exportToExcel = () => {
-    setIsExporting(true);
-    setTimeout(() => {
-      try {
-        const wb = XLSX.utils.book_new();
-
-        const purchaseSummaryData = [
-          ['采购订单汇总'],
-          ['订单号', '供应商', '状态', '总金额', '创建日期', '采购项数'],
-          ...filteredPurchaseOrders.map((order) => [
-            order.orderNo,
-            order.supplierName,
-            getStatusText(order.status),
-            order.totalAmount,
-            order.createdAt,
-            order.items.length,
-          ]),
-        ];
-        const ws1 = XLSX.utils.aoa_to_sheet(purchaseSummaryData);
-        ws1['!cols'] = [
-          { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
-        ];
-        XLSX.utils.book_append_sheet(wb, ws1, '采购订单');
-
-        const supplierData = [
-          ['供应商采购统计'],
-          ['排名', '供应商名称', '采购次数', '采购金额(元)'],
-          ...purchaseBySupplier.slice(0, 20).map((s, i) => [
-            i + 1, s.name, s.count, s.amount,
-          ]),
-        ];
-        const ws2 = XLSX.utils.aoa_to_sheet(supplierData);
-        ws2['!cols'] = [{ wch: 8 }, { wch: 25 }, { wch: 10 }, { wch: 15 }];
-        XLSX.utils.book_append_sheet(wb, ws2, '供应商统计');
-
-        const categoryData = [
-          ['药品分类采购统计'],
-          ['分类', '采购金额(元)', '占比'],
-          ...purchaseByCategory.map((c) => {
-            const total = purchaseByCategory.reduce((sum, c) => sum + c.value, 0);
-            return [c.name, c.value, `${((c.value / total) * 100).toFixed(1)}%`];
-          }),
-        ];
-        const ws3 = XLSX.utils.aoa_to_sheet(categoryData);
-        ws3['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 10 }];
-        XLSX.utils.book_append_sheet(wb, ws3, '分类统计');
-
-        const turnoverData = [
-          ['库存周转分析(TOP15)'],
-          ['排名', '药品名称', '分类', '当前库存', '月均用量', '周转天数', '状态'],
-          ...turnoverByMedicine.map((m, i) => [
-            i + 1,
-            m.name,
-            m.category,
-            m.totalStock,
-            m.avgMonthlyUsage,
-            m.turnoverDays,
-            m.turnoverDays > 60 ? '周转过慢' : m.turnoverDays > 30 ? '周转正常' : '周转良好',
-          ]),
-        ];
-        const ws4 = XLSX.utils.aoa_to_sheet(turnoverData);
-        ws4['!cols'] = [
-          { wch: 8 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-        ];
-        XLSX.utils.book_append_sheet(wb, ws4, '周转分析');
-
-        const expiryData = [
-          ['效期预警分析'],
-          ['状态', '金额(元)', '占比', '说明'],
-          ['30天内到期', expiryLossRate.expiringValue, `${expiryLossRate.expiringRate}%`, '需紧急处理'],
-          ['30-90天到期', expiryLossRate.warningValue, `${expiryLossRate.warningRate}%`, '需关注'],
-          ['库存总价值', expiryLossRate.totalValue, '100%', ''],
-        ];
-        const ws5 = XLSX.utils.aoa_to_sheet(expiryData);
-        ws5['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 20 }];
-        XLSX.utils.book_append_sheet(wb, ws5, '效期分析');
-
-        const now = new Date();
-        const periodText = selectedPeriod === 'month' ? '月度' : selectedPeriod === 'quarter' ? '季度' : '年度';
-        const fileName = `药房运营分析报告_${periodText}_${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}.xlsx`;
-
-        XLSX.writeFile(wb, fileName);
-      } catch (error) {
-        console.error('导出Excel失败:', error);
-        alert('导出Excel失败，请重试');
-      } finally {
-        setIsExporting(false);
-      }
-    }, 500);
-  };
+  }), [filteredTurnoverData]);
 
   const getStatusText = (status: string) => {
     const statusMap: Record<string, string> = {
@@ -461,6 +291,114 @@ export function StatisticsReports() {
     };
     return statusMap[status] || status;
   };
+
+  const exportToExcel = async () => {
+    setIsExporting(true);
+    try {
+      const wb = XLSX.utils.book_new();
+
+      const period = selectedPeriod === 'month' ? '月度' : selectedPeriod === 'quarter' ? '季度' : '年度';
+      
+      const [purchaseRes, supplierRes, categoryRes, turnoverRes, expiryRes] = await Promise.all([
+        statisticsApi.getExportPurchase(selectedPeriod),
+        statisticsApi.getExportSuppliers(selectedPeriod),
+        statisticsApi.getPurchaseByCategory(selectedPeriod),
+        statisticsApi.getInventoryTurnover({ limit: 15 }),
+        statisticsApi.getInventoryExpiry(),
+      ]);
+
+      const purchaseSummaryData = [
+        [`${period}采购订单汇总`],
+        ['订单号', '供应商', '状态', '总金额', '创建日期', '采购项数'],
+        ...(purchaseRes.data || []).map((order: any) => [
+          order.orderNo,
+          order.supplierName,
+          getStatusText(order.status),
+          order.totalAmount,
+          order.createdAt,
+          order.itemCount,
+        ]),
+      ];
+      const ws1 = XLSX.utils.aoa_to_sheet(purchaseSummaryData);
+      ws1['!cols'] = [
+        { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
+      ];
+      XLSX.utils.book_append_sheet(wb, ws1, '采购订单');
+
+      const supplierData = [
+        ['供应商采购统计'],
+        ['排名', '供应商名称', '采购次数', '采购金额(元)'],
+        ...(supplierRes.data || []).slice(0, 20).map((s: any, i: number) => [
+          i + 1, s.name, s.count, s.amount,
+        ]),
+      ];
+      const ws2 = XLSX.utils.aoa_to_sheet(supplierData);
+      ws2['!cols'] = [{ wch: 8 }, { wch: 25 }, { wch: 10 }, { wch: 15 }];
+      XLSX.utils.book_append_sheet(wb, ws2, '供应商统计');
+
+      const categoryTotal = (categoryRes.data || []).reduce((sum: number, c: any) => sum + c.value, 0);
+      const categoryData = [
+        ['药品分类采购统计'],
+        ['分类', '采购金额(元)', '占比'],
+        ...(categoryRes.data || []).map((c: any) => [
+          c.name, c.value, categoryTotal > 0 ? `${((c.value / categoryTotal) * 100).toFixed(1)}%` : '0%',
+        ]),
+      ];
+      const ws3 = XLSX.utils.aoa_to_sheet(categoryData);
+      ws3['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws3, '分类统计');
+
+      const turnoverList = turnoverRes.data || [];
+      const turnoverData = [
+        ['库存周转分析(TOP15)'],
+        ['排名', '药品名称', '分类', '当前库存', '月均用量', '周转天数', '状态'],
+        ...turnoverList.map((m: any, i: number) => [
+          i + 1,
+          m.name,
+          m.category,
+          m.totalStock,
+          m.avgMonthlyUsage,
+          m.turnoverDays,
+          m.turnoverDays > 60 ? '周转过慢' : m.turnoverDays > 30 ? '周转正常' : '周转良好',
+        ]),
+      ];
+      const ws4 = XLSX.utils.aoa_to_sheet(turnoverData);
+      ws4['!cols'] = [
+        { wch: 8 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+      ];
+      XLSX.utils.book_append_sheet(wb, ws4, '周转分析');
+
+      const expiryDataList = expiryRes.data || { expiringRate: 0, warningRate: 0, totalValue: 0, expiringValue: 0, warningValue: 0 };
+      const expiryData = [
+        ['效期预警分析'],
+        ['状态', '金额(元)', '占比', '说明'],
+        ['30天内到期', expiryDataList.expiringValue || 0, `${(expiryDataList.expiringRate || 0).toFixed(2)}%`, '需紧急处理'],
+        ['30-90天到期', expiryDataList.warningValue || 0, `${(expiryDataList.warningRate || 0).toFixed(2)}%`, '需关注'],
+        ['库存总价值', expiryDataList.totalValue || 0, '100%', ''],
+      ];
+      const ws5 = XLSX.utils.aoa_to_sheet(expiryData);
+      ws5['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 20 }];
+      XLSX.utils.book_append_sheet(wb, ws5, '效期分析');
+
+      const now = new Date();
+      const fileName = `药房运营分析报告_${period}_${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}.xlsx`;
+
+      XLSX.writeFile(wb, fileName);
+    } catch (error) {
+      console.error('导出Excel失败:', error);
+      alert('导出Excel失败，请重试');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6">
@@ -575,7 +513,7 @@ export function StatisticsReports() {
               <p className="text-sm text-gray-500">
                 {selectedPeriod === 'month' ? '本月' : selectedPeriod === 'quarter' ? '本季度' : '本年度'}处方总数
               </p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">{filteredPrescriptions.length}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{overview?.prescriptionCount || 0}</p>
             </div>
             <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
               <Package className="w-6 h-6 text-purple-600" />
@@ -652,7 +590,7 @@ export function StatisticsReports() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {purchaseBySupplier.slice(0, 10).map((supplier, index) => (
+                {supplierData.slice(0, 10).map((supplier, index) => (
                   <tr key={supplier.name} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
                       <span
@@ -747,15 +685,15 @@ export function StatisticsReports() {
               <div className="pt-2 text-sm text-gray-500">
                 <div className="flex items-center justify-between py-1">
                   <span>供应商总数</span>
-                  <span className="font-medium text-gray-900">{suppliers.length} 家</span>
+                  <span className="font-medium text-gray-900">{overview?.supplierCount || 0} 家</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
                   <span>药品品规数</span>
-                  <span className="font-medium text-gray-900">{medicines.length} 种</span>
+                  <span className="font-medium text-gray-900">{overview?.medicineCount || 0} 种</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
                   <span>库存批次</span>
-                  <span className="font-medium text-gray-900">{inventoryBatches.length} 批</span>
+                  <span className="font-medium text-gray-900">{overview?.batchCount || 0} 批</span>
                 </div>
               </div>
             </div>

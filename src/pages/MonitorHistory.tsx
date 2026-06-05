@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   History,
   Search,
@@ -9,11 +9,38 @@ import {
   Droplets,
   AlertTriangle,
 } from 'lucide-react';
-import { useAppStore } from '@/stores/appStore';
+import { monitorApi } from '@/services/api';
 import ReactECharts from 'echarts-for-react';
 
+interface WarehouseZone {
+  id: string;
+  name: string;
+  minTemp: number;
+  maxTemp: number;
+  minHumidity: number;
+  maxHumidity: number;
+  currentTemp: number;
+  currentHumidity: number;
+  capacity: number;
+  used: number;
+}
+
+interface MonitorRecord {
+  id: string;
+  zoneId: string;
+  zoneName: string;
+  temperature: number;
+  humidity: number;
+  isAlert: boolean;
+  alertType?: string;
+  recordedAt: string;
+  handled: boolean;
+}
+
 export function MonitorHistory() {
-  const { warehouseZones, monitorRecords } = useAppStore();
+  const [zones, setZones] = useState<WarehouseZone[]>([]);
+  const [records, setRecords] = useState<MonitorRecord[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [selectedZone, setSelectedZone] = useState<string>('all');
   const [startDate, setStartDate] = useState(() => {
@@ -23,14 +50,33 @@ export function MonitorHistory() {
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
 
+  const loadData = useCallback(async () => {
+    try {
+      const [zonesRes, recordsRes] = await Promise.all([
+        monitorApi.getZones(),
+        monitorApi.getRecords({ limit: 200 }),
+      ]);
+      setZones(zonesRes.data || []);
+      setRecords(recordsRes.data || []);
+    } catch (error) {
+      console.error('加载历史数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
   const filteredRecords = useMemo(() => {
-    return monitorRecords.filter((record) => {
+    return records.filter((record) => {
       const recordDate = new Date(record.recordedAt).toISOString().split('T')[0];
       const matchZone = selectedZone === 'all' || record.zoneId === selectedZone;
       const matchDate = recordDate >= startDate && recordDate <= endDate;
       return matchZone && matchDate;
     });
-  }, [monitorRecords, selectedZone, startDate, endDate]);
+  }, [records, selectedZone, startDate, endDate]);
 
   const chartData = useMemo(() => {
     const zoneRecords = new Map<string, { time: string; temp: number; humidity: number }[]>();
@@ -52,7 +98,7 @@ export function MonitorHistory() {
   const alertCount = filteredRecords.filter((r) => r.isAlert).length;
 
   const getZoneOption = (zoneId: string) => {
-    const zone = warehouseZones.find((z) => z.id === zoneId);
+    const zone = zones.find((z) => z.id === zoneId);
     const data = chartData.get(zoneId) || [];
 
     return {
@@ -105,6 +151,14 @@ export function MonitorHistory() {
       ],
     };
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6">
@@ -185,7 +239,7 @@ export function MonitorHistory() {
               className="px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="all">全部库区</option>
-              {warehouseZones.map((zone) => (
+              {zones.map((zone) => (
                 <option key={zone.id} value={zone.id}>
                   {zone.name}
                 </option>
@@ -216,7 +270,7 @@ export function MonitorHistory() {
       </div>
 
       <div className="grid grid-cols-2 gap-6 mb-6">
-        {(selectedZone === 'all' ? warehouseZones : warehouseZones.filter((z) => z.id === selectedZone)).map(
+        {(selectedZone === 'all' ? zones : zones.filter((z) => z.id === selectedZone)).map(
           (zone) => (
             <div key={zone.id} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
               <h3 className="font-semibold text-gray-900 mb-4">{zone.name}</h3>

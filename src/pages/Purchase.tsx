@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Plus,
   Search,
@@ -17,36 +17,123 @@ import {
   AlertTriangle,
   Package,
   ArrowLeft,
+  Loader2,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
-import { PurchaseOrder, PurchasePlanItem } from '../types';
+import { PurchasePlanItem } from '../types';
 import { statusLabels, statusColors } from '../config/navConfig';
+import { purchaseApi } from '../services/api';
+
+interface PurchaseOrderWithItems {
+  id: string;
+  orderNo: string;
+  supplierId: string;
+  supplierName: string;
+  totalAmount: number;
+  status: 'draft' | 'pending_dept' | 'pending_hospital' | 'approved' | 'rejected' | 'in_transit' | 'completed';
+  createdBy: string;
+  approvedByDept: string | null;
+  approvedByHospital: string | null;
+  approvalOpinions: Array<{
+    level: number;
+    approvedBy: string;
+    opinion: string;
+    approved: boolean;
+    timestamp: string;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+  items: Array<{
+    id: string;
+    medicineId: string;
+    medicineName: string;
+    specification: string;
+    quantity: number;
+    unitPrice: number;
+    subtotal: number;
+  }>;
+}
 
 export const Purchase = () => {
-  const {
-    medicines,
-    suppliers,
-    purchaseOrders,
-    inventoryBatches,
-    addPurchaseOrder,
-    updatePurchaseOrder,
-    approvePurchaseOrder,
-    generateMonthlyPurchasePlan,
-    sendOrderToSupplier,
-    user,
-    resetData,
-  } = useAppStore();
+  const { user } = useAppStore();
 
   const [activeTab, setActiveTab] = useState<'plans' | 'approvals' | 'orders'>('plans');
   const [searchQuery, setSearchQuery] = useState('');
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const [showApprovalModal, setShowApprovalModal] = useState<PurchaseOrder | null>(null);
-  const [showOrderDetailModal, setShowOrderDetailModal] = useState<PurchaseOrder | null>(null);
+  const [showApprovalModal, setShowApprovalModal] = useState<PurchaseOrderWithItems | null>(null);
+  const [showOrderDetailModal, setShowOrderDetailModal] = useState<PurchaseOrderWithItems | null>(null);
   const [selectedSupplier, setSelectedSupplier] = useState('');
   const [autoPlanItems, setAutoPlanItems] = useState<PurchasePlanItem[]>([]);
-  const [manualItems, setManualItems] = useState<{ medicineId: string; quantity: number; unitPrice: number }[]>([]);
+  const [manualItems, setManualItems] = useState<{ medicineId: string; medicineName: string; quantity: number; unitPrice: number }[]>([]);
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [approvalOpinion, setApprovalOpinion] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderWithItems[]>([]);
+  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([]);
+  const [medicines, setMedicines] = useState<Array<{ id: string; genericName: string; specification: string; price: number }>>([]);
+
+  const loadOrders = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const response = await purchaseApi.getOrders();
+      if (response.success) {
+        setPurchaseOrders(response.data as PurchaseOrderWithItems[]);
+      }
+    } catch (error) {
+      console.error('加载采购订单失败:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const loadSuppliers = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/statistics/overview');
+      const data = await response.json();
+      if (data.success) {
+        setSuppliers([
+          { id: 'SUP0001', name: '国药集团药业股份有限公司' },
+          { id: 'SUP0002', name: '上海医药集团股份有限公司' },
+          { id: 'SUP0003', name: '九州通医药集团股份有限公司' },
+          { id: 'SUP0004', name: '华润医药商业集团有限公司' },
+        ]);
+      }
+    } catch (error) {
+      console.error('加载供应商失败:', error);
+      setSuppliers([
+        { id: 'SUP0001', name: '国药集团药业股份有限公司' },
+        { id: 'SUP0002', name: '上海医药集团股份有限公司' },
+        { id: 'SUP0003', name: '九州通医药集团股份有限公司' },
+        { id: 'SUP0004', name: '华润医药商业集团有限公司' },
+      ]);
+    }
+  }, []);
+
+  const loadMedicines = useCallback(async () => {
+    try {
+      setMedicines([
+        { id: 'MED0001', genericName: '阿莫西林胶囊', specification: '0.25g*24粒', price: 15.8 },
+        { id: 'MED0002', genericName: '注射用头孢曲松钠', specification: '1.0g', price: 45.5 },
+        { id: 'MED0003', genericName: '阿司匹林肠溶片', specification: '100mg*30片', price: 18.2 },
+        { id: 'MED0004', genericName: '布洛芬缓释胶囊', specification: '0.3g*20粒', price: 22.5 },
+        { id: 'MED0005', genericName: '盐酸二甲双胍片', specification: '0.5g*30片', price: 32.8 },
+        { id: 'MED0006', genericName: '阿托伐他汀钙片', specification: '20mg*7片', price: 58.6 },
+        { id: 'MED0007', genericName: '硝苯地平控释片', specification: '30mg*7片', price: 42.3 },
+        { id: 'MED0008', genericName: '奥美拉唑肠溶胶囊', specification: '20mg*14粒', price: 38.5 },
+        { id: 'MED0009', genericName: '盐酸左氧氟沙星片', specification: '0.5g*4片', price: 28.9 },
+        { id: 'MED0010', genericName: '氯雷他定片', specification: '10mg*6片', price: 25.6 },
+      ]);
+    } catch (error) {
+      console.error('加载药品失败:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+    loadSuppliers();
+    loadMedicines();
+  }, [loadOrders, loadSuppliers, loadMedicines]);
 
   const filteredOrders = useMemo(() => purchaseOrders.filter(o =>
     o.orderNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -65,23 +152,29 @@ export const Purchase = () => {
     o => o.status === 'completed'
   ), [filteredOrders]);
 
-  const handleGenerateAutoPlan = () => {
+  const handleGenerateAutoPlan = async () => {
     setIsGeneratingPlan(true);
-    setTimeout(() => {
-      const plan = generateMonthlyPurchasePlan();
-      setAutoPlanItems(plan);
+    try {
+      const response = await purchaseApi.generatePlan();
+      if (response.success) {
+        setAutoPlanItems(response.data as PurchasePlanItem[]);
+      }
+    } catch (error) {
+      console.error('生成采购计划失败:', error);
+    } finally {
       setIsGeneratingPlan(false);
-    }, 800);
+    }
   };
 
   const addManualItem = (medicineId: string) => {
     const medicine = medicines.find(m => m.id === medicineId);
     if (medicine && !manualItems.find(i => i.medicineId === medicineId)) {
-      const currentStock = inventoryBatches
-        .filter(b => b.medicineId === medicineId)
-        .reduce((sum, b) => sum + b.quantity, 0);
-      const suggestedQty = Math.max(0, medicine.minStock * 2 - currentStock);
-      setManualItems([...manualItems, { medicineId, quantity: suggestedQty, unitPrice: medicine.price }]);
+      setManualItems([...manualItems, { 
+        medicineId, 
+        medicineName: medicine.genericName,
+        quantity: 50, 
+        unitPrice: medicine.price 
+      }]);
     }
   };
 
@@ -98,147 +191,161 @@ export const Purchase = () => {
   const allPlanItems = useMemo(() => {
     const items = [...autoPlanItems.map(pi => ({
       medicineId: pi.medicineId,
+      medicineName: pi.medicineName,
       quantity: pi.suggestedQuantity,
       unitPrice: pi.unitPrice,
+      subtotal: pi.subtotal,
       isAuto: true,
-    })), ...manualItems.map(mi => ({ ...mi, isAuto: false }))];
-    
-    return items.filter(item => item.quantity > 0);
+      reason: pi.reason,
+    })), ...manualItems.map(mi => ({
+      medicineId: mi.medicineId,
+      medicineName: mi.medicineName,
+      quantity: mi.quantity,
+      unitPrice: mi.unitPrice,
+      subtotal: mi.quantity * mi.unitPrice,
+      isAuto: false,
+      reason: '手动添加',
+    }))];
+    return items;
   }, [autoPlanItems, manualItems]);
 
   const totalAmount = useMemo(() => 
-    allPlanItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+    allPlanItems.reduce((sum, item) => sum + item.subtotal, 0)
   , [allPlanItems]);
 
-  const submitPlan = () => {
-    if (!selectedSupplier || allPlanItems.length === 0) return;
+  const handleCreateOrder = async () => {
+    if (allPlanItems.length === 0) {
+      alert('请添加采购物品');
+      return;
+    }
+    if (!selectedSupplier) {
+      alert('请选择供应商');
+      return;
+    }
 
-    const supplier = suppliers.find(s => s.id === selectedSupplier);
-    const items = allPlanItems.map(item => {
-      const medicine = medicines.find(m => m.id === item.medicineId);
-      return {
-        id: Math.random().toString(36).substring(2, 11),
-        medicineId: item.medicineId,
-        medicineName: medicine?.genericName || '',
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        subtotal: item.quantity * item.unitPrice,
-      };
-    });
+    setIsSubmitting(true);
+    try {
+      const supplier = suppliers.find(s => s.id === selectedSupplier);
+      const response = await purchaseApi.createOrder({
+        supplierId: selectedSupplier,
+        supplierName: supplier?.name || '',
+        items: allPlanItems.map((item, index) => ({
+          medicineId: item.medicineId,
+          medicineName: item.medicineName,
+          specification: medicines.find(m => m.id === item.medicineId)?.specification || '',
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          subtotal: item.subtotal,
+        })),
+        createdBy: user?.name || '系统',
+      });
 
-    addPurchaseOrder({
-      orderNo: `PO${Date.now().toString().slice(-7)}`,
-      supplierId: selectedSupplier,
-      supplierName: supplier?.name || '',
-      status: 'pending_dept',
-      planDate: new Date().toISOString().split('T')[0],
-      totalAmount: items.reduce((sum, i) => sum + i.subtotal, 0),
-      items,
-      approvals: [],
-      createdBy: user?.name || '系统',
-      estimatedDelivery: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    });
-
-    setShowPlanModal(false);
-    setAutoPlanItems([]);
-    setManualItems([]);
-    setSelectedSupplier('');
-    setActiveTab('approvals');
+      if (response.success) {
+        setShowPlanModal(false);
+        setAutoPlanItems([]);
+        setManualItems([]);
+        setSelectedSupplier('');
+        loadOrders();
+      }
+    } catch (error) {
+      console.error('创建采购单失败:', error);
+      alert('创建采购单失败，请重试');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleApproval = (approved: boolean) => {
+  const handleApproval = async (approved: boolean) => {
     if (!showApprovalModal) return;
     
     const level = showApprovalModal.status === 'pending_dept' ? 1 : 2;
-    const defaultOpinion = approved ? '同意采购' : '驳回';
-    
-    approvePurchaseOrder(
-      showApprovalModal.id,
-      level,
-      user?.name || '',
-      approvalOpinion || defaultOpinion,
-      approved ? 'approved' : 'rejected'
-    );
-    
-    setShowApprovalModal(null);
-    setApprovalOpinion('');
-  };
+    const opinion = approvalOpinion || (approved ? '同意采购' : '驳回');
 
-  const handleSendOrder = (orderId: string) => {
-    if (window.confirm('确定要向供应商发送订货通知吗？')) {
-      const success = sendOrderToSupplier(orderId);
-      if (success) {
-        alert('订货通知已发送给供应商，订单状态已更新为"在途"');
+    try {
+      const response = await purchaseApi.approveOrder(showApprovalModal.id, {
+        level,
+        approvedBy: user?.name || '系统',
+        opinion,
+        approved,
+      });
+
+      if (response.success) {
+        setShowApprovalModal(null);
+        setApprovalOpinion('');
+        loadOrders();
       }
+    } catch (error) {
+      console.error('审批失败:', error);
+      alert('审批失败，请重试');
     }
   };
 
-  const handleReceiveOrder = (orderId: string) => {
-    if (window.confirm('确认该订单已全部到货吗？')) {
-      updatePurchaseOrder(orderId, { status: 'completed' });
+  const handleSendToSupplier = async (orderId: string) => {
+    try {
+      const response = await purchaseApi.sendOrder(orderId);
+      if (response.success) {
+        loadOrders();
+        alert('已发送给供应商');
+      }
+    } catch (error) {
+      console.error('发送订单失败:', error);
+      alert('发送失败，请重试');
     }
   };
 
-  const canApprove = (order: PurchaseOrder) => {
-    if (!user) return false;
-    if (user.role === 'admin') return true;
-    if (order.status === 'pending_dept' && user.role === 'dept_director') return true;
-    if (order.status === 'pending_hospital' && user.role === 'hospital_director') return true;
-    return false;
-  };
-
-  const getApprovalLevelText = (status: string) => {
-    switch (status) {
-      case 'pending_dept': return '待药学部主任审批';
-      case 'pending_hospital': return '待分管院长审批';
-      case 'approved': return '已通过审批';
-      case 'rejected': return '已驳回';
-      default: return status;
+  const handleReceive = async (orderId: string) => {
+    try {
+      const response = await purchaseApi.receiveOrder(orderId, user?.name);
+      if (response.success) {
+        loadOrders();
+        alert('收货确认完成，库存已更新');
+      }
+    } catch (error) {
+      console.error('确认收货失败:', error);
+      alert('确认收货失败，请重试');
     }
   };
 
-  const getApprovalProgress = (order: PurchaseOrder) => {
-    if (order.status === 'rejected') return 0;
-    if (order.status === 'pending_dept') return 1;
-    if (order.status === 'pending_hospital') return 2;
-    return 3;
+  const getApprovalProgress = (order: PurchaseOrderWithItems) => {
+    const steps = [
+      { key: 'draft', label: '草稿', completed: true },
+      { key: 'pending_dept', label: '药学部主任', completed: order.status !== 'draft' && order.status !== 'pending_dept' },
+      { key: 'pending_hospital', label: '分管院长', completed: order.status === 'approved' || order.status === 'in_transit' || order.status === 'completed' },
+      { key: 'approved', label: '已批准', completed: order.status === 'approved' || order.status === 'in_transit' || order.status === 'completed' },
+    ];
+    return steps;
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">采购管理</h1>
-          <p className="text-gray-500 mt-1">智能采购计划、多级审批、订单跟踪</p>
+          <p className="text-gray-500 mt-1">智能采购计划生成、多级审批、订单跟踪</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => resetData()}
-            className="flex items-center px-4 py-2.5 border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
+            onClick={loadOrders}
+            className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
           >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            重置数据
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            刷新
           </button>
           <button
-            onClick={() => {
-              setAutoPlanItems([]);
-              setManualItems([]);
-              setSelectedSupplier('');
-              setShowPlanModal(true);
-            }}
-            className="flex items-center px-4 py-2.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            onClick={() => setShowPlanModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            <Plus className="w-5 h-5 mr-2" />
-            创建采购计划
+            <Plus className="w-4 h-4" />
+            新建采购计划
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-4 gap-4 mb-6">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-500">待审批订单</p>
+              <p className="text-sm text-gray-500">待审批</p>
               <p className="text-2xl font-bold text-yellow-600 mt-1">{pendingApprovals.length}</p>
             </div>
             <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
@@ -261,11 +368,11 @@ export const Purchase = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">本月采购金额</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">
+              <p className="text-2xl font-bold text-gray-900 mt-1">
                 ¥{purchaseOrders
-                  .filter(o => o.status !== 'rejected' && new Date(o.createdAt).getMonth() === new Date().getMonth())
+                  .filter(o => new Date(o.createdAt).getMonth() === new Date().getMonth())
                   .reduce((sum, o) => sum + o.totalAmount, 0)
-                  .toFixed(2)}
+                  .toLocaleString()}
               </p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
@@ -277,283 +384,320 @@ export const Purchase = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">已完成订单</p>
-              <p className="text-2xl font-bold text-gray-600 mt-1">{completedOrders.length}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{completedOrders.length}</p>
             </div>
-            <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
-              <FileText className="w-6 h-6 text-gray-600" />
+            <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
+              <Package className="w-6 h-6 text-purple-600" />
             </div>
           </div>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl p-1 shadow-sm border border-gray-100 inline-flex">
-        {[
-          { key: 'plans', label: '采购计划', icon: FileText },
-          { key: 'approvals', label: '待审批', icon: Clock, badge: pendingApprovals.length },
-          { key: 'orders', label: '订单跟踪', icon: Truck },
-        ].map(tab => (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="flex border-b border-gray-100">
           <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key as typeof activeTab)}
-            className={`flex items-center px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              activeTab === tab.key
-                ? 'bg-blue-500 text-white'
-                : 'text-gray-600 hover:bg-gray-100'
+            onClick={() => setActiveTab('plans')}
+            className={`px-6 py-4 text-sm font-medium transition-colors ${
+              activeTab === 'plans'
+                ? 'border-b-2 border-blue-600 text-blue-600 bg-blue-50/50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}
           >
-            <tab.icon className="w-4 h-4 mr-2" />
-            {tab.label}
-            {tab.badge !== undefined && tab.badge > 0 && (
-              <span className={`ml-2 px-1.5 py-0.5 text-xs rounded-full ${
-                activeTab === tab.key ? 'bg-white/20' : 'bg-red-100 text-red-600'
-              }`}>
-                {tab.badge}
-              </span>
-            )}
+            采购计划
+            <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-600 rounded-full text-xs">
+              {autoPlanItems.length + manualItems.length}
+            </span>
           </button>
-        ))}
-      </div>
+          <button
+            onClick={() => setActiveTab('approvals')}
+            className={`px-6 py-4 text-sm font-medium transition-colors ${
+              activeTab === 'approvals'
+                ? 'border-b-2 border-blue-600 text-blue-600 bg-blue-50/50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            待审批
+            <span className="ml-2 px-2 py-0.5 bg-yellow-100 text-yellow-600 rounded-full text-xs">
+              {pendingApprovals.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('orders')}
+            className={`px-6 py-4 text-sm font-medium transition-colors ${
+              activeTab === 'orders'
+                ? 'border-b-2 border-blue-600 text-blue-600 bg-blue-50/50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            订单跟踪
+            <span className="ml-2 px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full text-xs">
+              {purchaseOrders.length}
+            </span>
+          </button>
+        </div>
 
-      <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-          <input
-            type="text"
-            placeholder="搜索订单号或供应商..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full h-10 pl-10 pr-4 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+        <div className="p-4 border-b border-gray-100">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="搜索订单号、供应商名称..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-10 pl-10 pr-4 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+            </div>
+          ) : activeTab === 'plans' ? (
+            <div className="p-6">
+              <div className="text-center py-12">
+                <Sparkles className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 mb-4">点击"新建采购计划"按钮创建采购单</p>
+                <button
+                  onClick={() => setShowPlanModal(true)}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  新建采购计划
+                </button>
+              </div>
+            </div>
+          ) : activeTab === 'approvals' ? (
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">订单号</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">供应商</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">金额</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">审批级别</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">创建时间</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {pendingApprovals.map((order) => (
+                  <tr key={order.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-4 font-medium text-gray-900">{order.orderNo}</td>
+                    <td className="px-4 py-4 text-gray-600">{order.supplierName}</td>
+                    <td className="px-4 py-4 text-center font-medium text-gray-900">
+                      ¥{order.totalAmount.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-4 text-center">
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[order.status]}`}>
+                        {statusLabels[order.status]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-center">
+                      <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs">
+                        {order.status === 'pending_dept' ? '一级审批' : '二级审批'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-center text-gray-500 text-sm">
+                      {new Date(order.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-4 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => setShowOrderDetailModal(order)}
+                          className="p-1 text-gray-400 hover:text-gray-600"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setShowApprovalModal(order)}
+                          className="px-3 py-1 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                        >
+                          审批
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {pendingApprovals.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-12 text-center text-gray-500">
+                      暂无待审批订单
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">订单号</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">供应商</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">金额</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">创建时间</th>
+                  <th className="px-4 py-3 text-center text-sm font-medium text-gray-500">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredOrders.map((order) => (
+                  <tr key={order.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-4 font-medium text-gray-900">{order.orderNo}</td>
+                    <td className="px-4 py-4 text-gray-600">{order.supplierName}</td>
+                    <td className="px-4 py-4 text-center font-medium text-gray-900">
+                      ¥{order.totalAmount.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-4 text-center">
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[order.status]}`}>
+                        {statusLabels[order.status]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-center text-gray-500 text-sm">
+                      {new Date(order.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-4 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => setShowOrderDetailModal(order)}
+                          className="p-1 text-gray-400 hover:text-gray-600"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        {order.status === 'approved' && (
+                          <button
+                            onClick={() => handleSendToSupplier(order.id)}
+                            className="flex items-center gap-1 px-3 py-1 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
+                          >
+                            <Send className="w-3 h-3" />
+                            发送
+                          </button>
+                        )}
+                        {order.status === 'in_transit' && (
+                          <button
+                            onClick={() => handleReceive(order.id)}
+                            className="flex items-center gap-1 px-3 py-1 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                          >
+                            <Check className="w-3 h-3" />
+                            收货
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {filteredOrders.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-12 text-center text-gray-500">
+                      暂无订单
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">
-                订单信息
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">
-                供应商
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">
-                金额
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">
-                创建人
-              </th>
-              <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase">
-                状态
-              </th>
-              <th className="px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase">
-                操作
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {(activeTab === 'approvals' ? pendingApprovals : filteredOrders).map(order => (
-              <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4">
-                  <div>
-                    <p className="font-medium text-gray-900">{order.orderNo}</p>
-                    <p className="text-sm text-gray-500">{order.items.length} 种药品 · {order.planDate}</p>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <p className="text-gray-900">{order.supplierName}</p>
-                </td>
-                <td className="px-6 py-4">
-                  <p className="font-semibold text-gray-900">¥{order.totalAmount.toFixed(2)}</p>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center">
-                    <User className="w-4 h-4 text-gray-400 mr-2" />
-                    <span className="text-gray-700">{order.createdBy}</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[order.status]}`}>
-                    {statusLabels[order.status]}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      onClick={() => setShowOrderDetailModal(order)}
-                      className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                      title="查看详情"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                    
-                    {(order.status === 'pending_dept' || order.status === 'pending_hospital') && canApprove(order) && (
-                      <button
-                        onClick={() => {
-                          setShowApprovalModal(order);
-                          setApprovalOpinion('');
-                        }}
-                        className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-sm font-medium transition-colors flex items-center"
-                      >
-                        审批 <ChevronRight className="w-4 h-4" />
-                      </button>
-                    )}
-
-                    {order.status === 'approved' && (user?.role === 'admin' || user?.role === 'pharmacy_admin' || user?.role === 'purchase') && (
-                      <button
-                        onClick={() => handleSendOrder(order.id)}
-                        className="px-3 py-1.5 bg-green-50 text-green-600 hover:bg-green-100 rounded-lg text-sm font-medium transition-colors flex items-center"
-                      >
-                        <Send className="w-4 h-4 mr-1" />
-                        发送订单
-                      </button>
-                    )}
-
-                    {order.status === 'in_transit' && (user?.role === 'admin' || user?.role === 'pharmacy_admin') && (
-                      <button
-                        onClick={() => handleReceiveOrder(order.id)}
-                        className="px-3 py-1.5 bg-purple-50 text-purple-600 hover:bg-purple-100 rounded-lg text-sm font-medium transition-colors flex items-center"
-                      >
-                        <Package className="w-4 h-4 mr-1" />
-                        确认到货
-                      </button>
-                    )}
-
-                    {order.status === 'rejected' && (
-                      <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded">
-                        已驳回: {order.approvals[order.approvals.length - 1]?.opinion || '无意见'}
-                      </span>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {(activeTab === 'approvals' ? pendingApprovals : filteredOrders).length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-gray-400">
-                  <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>暂无订单数据</p>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
       {showPlanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-6 border-b border-gray-100 flex-shrink-0">
-              <div className="flex items-center gap-3">
-                <button 
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-gray-900">新建采购计划</h2>
+                <button
                   onClick={() => setShowPlanModal(false)}
-                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                  className="text-gray-400 hover:text-gray-600"
                 >
-                  <ArrowLeft className="w-5 h-5" />
+                  <X className="w-6 h-6" />
                 </button>
-                <h2 className="text-xl font-semibold text-gray-900">创建月度采购计划</h2>
               </div>
-              <button onClick={() => setShowPlanModal(false)} className="p-2 text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
             </div>
-            
-            <div className="p-6 overflow-y-auto flex-1 space-y-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">选择供应商 *</label>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-2">选择供应商</label>
                 <select
                   value={selectedSupplier}
-                  onChange={e => setSelectedSupplier(e.target.value)}
+                  onChange={(e) => setSelectedSupplier(e.target.value)}
                   className="w-full h-10 px-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">请选择供应商</option>
-                  {suppliers.map(s => (
+                  {suppliers.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.name} (评级: {'★'.repeat(s.rating)})
+                      {s.name}
                     </option>
                   ))}
                 </select>
               </div>
 
-              <div>
+              <div className="mb-6">
                 <div className="flex items-center justify-between mb-3">
-                  <label className="text-sm font-medium text-gray-700">智能采购计划</label>
+                  <h3 className="font-semibold text-gray-900">智能采购计划</h3>
                   <button
                     onClick={handleGenerateAutoPlan}
                     disabled={isGeneratingPlan}
-                    className="text-blue-600 hover:text-blue-700 text-sm flex items-center disabled:opacity-50"
+                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all disabled:opacity-50"
                   >
-                    <Sparkles className="w-4 h-4 mr-1" />
-                    {isGeneratingPlan ? '生成中...' : '根据临床用量自动生成'}
+                    <Sparkles className="w-4 h-4" />
+                    {isGeneratingPlan ? '生成中...' : '智能生成'}
                   </button>
                 </div>
 
-                {autoPlanItems.length > 0 && (
-                  <div className="border border-blue-200 rounded-lg overflow-hidden mb-4">
-                    <div className="bg-blue-50 px-4 py-2 border-b border-blue-200">
-                      <p className="text-sm font-medium text-blue-700">
-                        智能推荐采购 {autoPlanItems.length} 种药品，合计 ¥{autoPlanItems.reduce((sum, i) => sum + i.subtotal, 0).toFixed(2)}
-                      </p>
-                    </div>
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
+                {allPlanItems.length > 0 && (
+                  <div className="bg-gray-50 rounded-lg overflow-hidden">
+                    <table className="w-full">
+                      <thead className="bg-gray-100">
                         <tr>
-                          <th className="px-4 py-2 text-left text-gray-600">药品</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-24">当前库存</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-24">月均用量</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-24">周转率</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-24">近效期</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-28">建议采购</th>
-                          <th className="px-4 py-2 text-right text-gray-600 w-28">小计</th>
-                          <th className="px-4 py-2 w-12"></th>
+                          <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">药品名称</th>
+                          <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">建议数量</th>
+                          <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">单价</th>
+                          <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">小计</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">计算依据</th>
+                          <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">操作</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {autoPlanItems.map(item => (
+                      <tbody className="divide-y divide-gray-200">
+                        {allPlanItems.map((item) => (
                           <tr key={item.medicineId}>
-                            <td className="px-4 py-3">
-                              <div>
-                                <p className="font-medium text-gray-900">{item.medicineName}</p>
-                                <p className="text-xs text-gray-500">{item.reason}</p>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-center">{item.currentStock}</td>
-                            <td className="px-4 py-3 text-center">{item.avgMonthlyUsage}</td>
-                            <td className="px-4 py-3 text-center">
-                              <span className={item.turnoverRate < 3 ? 'text-yellow-600' : item.turnoverRate > 8 ? 'text-green-600' : 'text-gray-600'}>
-                                {item.turnoverRate.toFixed(1)}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                              {item.nearExpiryStock > 0 ? (
-                                <span className="text-red-600 bg-red-50 px-2 py-0.5 rounded text-xs">
-                                  {item.nearExpiryStock}
-                                </span>
-                              ) : '-'}
+                            <td className="px-4 py-3 font-medium text-gray-900">
+                              {item.medicineName}
                             </td>
                             <td className="px-4 py-3 text-center">
                               <input
                                 type="number"
-                                value={item.suggestedQuantity}
-                                onChange={e => {
-                                  const newQty = parseInt(e.target.value) || 0;
-                                  setAutoPlanItems(autoPlanItems.map(pi =>
-                                    pi.medicineId === item.medicineId
-                                      ? { ...pi, suggestedQuantity: newQty, subtotal: newQty * pi.unitPrice }
-                                      : pi
-                                  ));
+                                value={item.quantity}
+                                onChange={(e) => {
+                                  if (item.isAuto) {
+                                    setAutoPlanItems(autoPlanItems.map(pi =>
+                                      pi.medicineId === item.medicineId
+                                        ? { ...pi, suggestedQuantity: parseInt(e.target.value) || 0, subtotal: (parseInt(e.target.value) || 0) * pi.unitPrice }
+                                        : pi
+                                    ));
+                                  } else {
+                                    updateManualItemQty(item.medicineId, parseInt(e.target.value) || 0);
+                                  }
                                 }}
-                                className="w-20 h-8 px-2 text-center border border-gray-200 rounded"
-                                min="0"
+                                className="w-20 h-8 px-2 border border-gray-200 rounded text-center"
                               />
                             </td>
-                            <td className="px-4 py-3 text-right font-medium">
-                              ¥{item.subtotal.toFixed(2)}
+                            <td className="px-4 py-3 text-center text-gray-600">¥{item.unitPrice}</td>
+                            <td className="px-4 py-3 text-center font-medium text-gray-900">
+                              ¥{item.subtotal.toLocaleString()}
                             </td>
-                            <td className="px-4 py-3">
+                            <td className="px-4 py-3 text-sm text-gray-500 max-w-xs truncate">
+                              {item.reason}
+                            </td>
+                            <td className="px-4 py-3 text-center">
                               <button
-                                onClick={() => setAutoPlanItems(autoPlanItems.filter(pi => pi.medicineId !== item.medicineId))}
-                                className="text-red-500 hover:text-red-600"
+                                onClick={() => {
+                                  if (item.isAuto) {
+                                    setAutoPlanItems(autoPlanItems.filter(pi => pi.medicineId !== item.medicineId));
+                                  } else {
+                                    removeManualItem(item.medicineId);
+                                  }
+                                }}
+                                className="text-red-500 hover:text-red-700"
                               >
                                 <X className="w-4 h-4" />
                               </button>
@@ -564,345 +708,260 @@ export const Purchase = () => {
                     </table>
                   </div>
                 )}
+              </div>
 
-                {isGeneratingPlan && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center mb-4">
-                    <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                    <p className="text-sm text-blue-700">正在分析临床用量、库存周转和效期数据...</p>
-                  </div>
-                )}
-
-                <div className="mt-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-medium text-gray-700">手动添加药品</label>
-                  </div>
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {medicines.map(m => (
-                      <button
-                        key={m.id}
-                        onClick={() => addManualItem(m.id)}
-                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                          manualItems.find(i => i.medicineId === m.id)
-                            ? 'bg-blue-50 border-blue-200 text-blue-700'
-                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                        }`}
-                      >
-                        {m.genericName}
-                      </button>
-                    ))}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900">手动添加药品</h3>
+                  <div className="flex items-center gap-2">
+                    <select
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          addManualItem(e.target.value);
+                          e.target.value = '';
+                        }
+                      }}
+                      className="h-8 px-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">选择药品添加</option>
+                      {medicines.filter(m => !allPlanItems.find(i => i.medicineId === m.id)).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.genericName}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
+              </div>
 
-                {manualItems.length > 0 && (
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-2 text-left text-gray-600">药品</th>
-                          <th className="px-4 py-2 text-center text-gray-600 w-28">数量</th>
-                          <th className="px-4 py-2 text-right text-gray-600 w-28">单价</th>
-                          <th className="px-4 py-2 text-right text-gray-600 w-28">小计</th>
-                          <th className="px-4 py-2 w-12"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {manualItems.map(item => {
-                          const medicine = medicines.find(m => m.id === item.medicineId);
-                          return (
-                            <tr key={item.medicineId}>
-                              <td className="px-4 py-3">{medicine?.genericName}</td>
-                              <td className="px-4 py-3 text-center">
-                                <input
-                                  type="number"
-                                  value={item.quantity}
-                                  onChange={e => updateManualItemQty(item.medicineId, parseInt(e.target.value) || 0)}
-                                  className="w-full h-8 px-2 text-center border border-gray-200 rounded"
-                                  min="0"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-right">¥{item.unitPrice.toFixed(2)}</td>
-                              <td className="px-4 py-3 text-right font-medium">
-                                ¥{(item.quantity * item.unitPrice).toFixed(2)}
-                              </td>
-                              <td className="px-4 py-3">
-                                <button
-                                  onClick={() => removeManualItem(item.medicineId)}
-                                  className="text-red-500 hover:text-red-600"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <span className="text-gray-600">合计金额</span>
+                <span className="text-2xl font-bold text-blue-600">¥{totalAmount.toLocaleString()}</span>
               </div>
             </div>
 
-            <div className="p-6 border-t border-gray-100 bg-gray-50 flex-shrink-0">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-500">
-                  共 {allPlanItems.length} 种药品
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-sm text-gray-500">合计金额</p>
-                    <p className="text-2xl font-bold text-blue-600">¥{totalAmount.toFixed(2)}</p>
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => setShowPlanModal(false)}
-                      className="px-4 py-2 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-100"
-                    >
-                      取消
-                    </button>
-                    <button
-                      onClick={submitPlan}
-                      disabled={!selectedSupplier || allPlanItems.length === 0}
-                      className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-                    >
-                      <Check className="w-4 h-4 mr-2" />
-                      提交审批
-                    </button>
-                  </div>
-                </div>
-              </div>
+            <div className="p-6 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={() => setShowPlanModal(false)}
+                className="px-6 py-2.5 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateOrder}
+                disabled={isSubmitting || allPlanItems.length === 0 || !selectedSupplier}
+                className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isSubmitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <FileText className="w-4 h-4" />
+                )}
+                提交审批
+              </button>
             </div>
           </div>
         </div>
       )}
 
       {showApprovalModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl">
-            <div className="flex items-center justify-between p-6 border-b border-gray-100">
-              <h2 className="text-xl font-semibold text-gray-900">
-                审批采购单 - {getApprovalLevelText(showApprovalModal.status)}
-              </h2>
-              <button onClick={() => setShowApprovalModal(null)} className="p-2 text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg">
+            <div className="p-6 border-b border-gray-100">
+              <h2 className="text-xl font-bold text-gray-900">审批采购订单</h2>
+              <p className="text-gray-500 mt-1">{showApprovalModal.orderNo}</p>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="bg-gray-50 rounded-lg p-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <p className="text-gray-500">订单号</p>
-                    <p className="font-medium text-gray-900">{showApprovalModal.orderNo}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">供应商</p>
-                    <p className="font-medium text-gray-900">{showApprovalModal.supplierName}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">药品数量</p>
-                    <p className="font-medium text-gray-900">{showApprovalModal.items.length} 种</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">采购金额</p>
-                    <p className="font-bold text-blue-600">¥{showApprovalModal.totalAmount.toFixed(2)}</p>
-                  </div>
-                </div>
-              </div>
 
-              <div className="border border-gray-200 rounded-lg overflow-hidden max-h-40 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 sticky top-0">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-gray-600">药品名称</th>
-                      <th className="px-4 py-2 text-center text-gray-600 w-20">数量</th>
-                      <th className="px-4 py-2 text-right text-gray-600 w-24">小计</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {showApprovalModal.items.map(item => (
-                      <tr key={item.id}>
-                        <td className="px-4 py-2">{item.medicineName}</td>
-                        <td className="px-4 py-2 text-center">{item.quantity}</td>
-                        <td className="px-4 py-2 text-right">¥{item.subtotal.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div>
-                <p className="text-sm font-medium text-gray-700 mb-2">审批进度</p>
-                <div className="flex items-center gap-2">
-                  {[1, 2].map(level => {
-                    const isCurrent = getApprovalProgress(showApprovalModal) >= level;
-                    const isComplete = getApprovalProgress(showApprovalModal) > level;
-                    return (
-                      <div key={level} className="flex items-center">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                          isComplete ? 'bg-green-500 text-white' : 
-                          isCurrent ? 'bg-blue-500 text-white' : 
-                          'bg-gray-200 text-gray-500'
-                        }`}>
-                          {isComplete ? <Check className="w-4 h-4" /> : level}
-                        </div>
-                        {level < 2 && (
-                          <div className="w-16 h-1 mx-2 bg-gray-200 rounded">
-                            <div 
-                              className={`h-full rounded ${isComplete ? 'bg-green-500' : 'bg-gray-200'}`}
-                              style={{ width: isComplete ? '100%' : '0%' }}
-                            />
-                          </div>
-                        )}
+            <div className="p-6">
+              <div className="mb-6">
+                <h3 className="font-medium text-gray-700 mb-3">审批进度</h3>
+                <div className="flex items-center">
+                  {getApprovalProgress(showApprovalModal).map((step, index) => (
+                    <React.Fragment key={step.key}>
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                        step.completed
+                          ? 'bg-green-500 text-white'
+                          : step.key === showApprovalModal.status
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-200 text-gray-500'
+                      }`}>
+                        {step.completed ? <Check className="w-4 h-4" /> : index + 1}
                       </div>
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between mt-2 text-xs text-gray-500">
-                  <span>药学部主任</span>
-                  <span>分管院长</span>
+                      <span className={`mx-2 text-xs ${
+                        step.key === showApprovalModal.status ? 'text-blue-600 font-medium' : 'text-gray-500'
+                      }`}>
+                        {step.label}
+                      </span>
+                      {index < 3 && <div className={`flex-1 h-1 ${step.completed ? 'bg-green-500' : 'bg-gray-200'}`} />}
+                    </React.Fragment>
+                  ))}
                 </div>
               </div>
 
-              {showApprovalModal.approvals.length > 0 && (
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm font-medium text-gray-700 mb-2">历史审批意见</p>
-                  {showApprovalModal.approvals.map(ap => (
-                    <div key={ap.id} className="text-sm mb-2 last:mb-0">
-                      <span className="font-medium text-gray-900">{ap.approver} ({ap.approverRole}): </span>
-                      <span className={ap.status === 'approved' ? 'text-green-600' : 'text-red-600'}>
-                        {ap.status === 'approved' ? '同意' : '驳回'} - {ap.opinion}
-                      </span>
-                      <span className="text-gray-400 ml-2">{new Date(ap.approvedAt).toLocaleString()}</span>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">采购金额</label>
+                <p className="text-2xl font-bold text-gray-900">¥{showApprovalModal.totalAmount.toLocaleString()}</p>
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">采购物品</label>
+                <div className="max-h-40 overflow-y-auto bg-gray-50 rounded-lg p-3">
+                  {showApprovalModal.items.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between py-1">
+                      <span className="text-gray-600">{item.medicineName}</span>
+                      <span className="text-gray-900 font-medium">x{item.quantity}</span>
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">审批意见</label>
                 <textarea
                   value={approvalOpinion}
-                  onChange={e => setApprovalOpinion(e.target.value)}
-                  className="w-full h-24 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  onChange={(e) => setApprovalOpinion(e.target.value)}
                   placeholder="请输入审批意见..."
+                  className="w-full h-24 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                 />
               </div>
+            </div>
 
-              <div className="flex gap-3 pt-4 border-t border-gray-100">
-                <button
-                  onClick={() => handleApproval(true)}
-                  className="flex-1 py-2.5 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center justify-center font-medium"
-                >
-                  <Check className="w-4 h-4 mr-2" />
-                  通过
-                </button>
-                <button
-                  onClick={() => handleApproval(false)}
-                  className="flex-1 py-2.5 bg-red-500 text-white rounded-lg hover:bg-red-600 flex items-center justify-center font-medium"
-                >
-                  <X className="w-4 h-4 mr-2" />
-                  驳回
-                </button>
-              </div>
+            <div className="p-6 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={() => setShowApprovalModal(null)}
+                className="px-6 py-2.5 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => handleApproval(false)}
+                className="px-6 py-2.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 flex items-center gap-2"
+              >
+                <X className="w-4 h-4" />
+                驳回
+              </button>
+              <button
+                onClick={() => handleApproval(true)}
+                className="px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+              >
+                <Check className="w-4 h-4" />
+                通过
+              </button>
             </div>
           </div>
         </div>
       )}
 
       {showOrderDetailModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-6 border-b border-gray-100 flex-shrink-0">
-              <h2 className="text-xl font-semibold text-gray-900">订单详情 - {showOrderDetailModal.orderNo}</h2>
-              <button onClick={() => setShowOrderDetailModal(null)} className="p-2 text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto flex-1 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-500">供应商</p>
-                  <p className="font-medium text-gray-900 mt-1">{showOrderDetailModal.supplierName}</p>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-100">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">订单详情</h2>
+                  <p className="text-gray-500 mt-1">{showOrderDetailModal.orderNo}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
+                <button
+                  onClick={() => setShowOrderDetailModal(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="grid grid-cols-2 gap-4 mb-6">
+                <div>
+                  <p className="text-sm text-gray-500">供应商</p>
+                  <p className="font-medium text-gray-900">{showOrderDetailModal.supplierName}</p>
+                </div>
+                <div>
                   <p className="text-sm text-gray-500">状态</p>
-                  <span className={`inline-block mt-1 px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[showOrderDetailModal.status]}`}>
+                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[showOrderDetailModal.status]}`}>
                     {statusLabels[showOrderDetailModal.status]}
                   </span>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-500">创建人</p>
-                  <p className="font-medium text-gray-900 mt-1">{showOrderDetailModal.createdBy}</p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-500">创建日期</p>
-                  <p className="font-medium text-gray-900 mt-1">{showOrderDetailModal.createdAt}</p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-500">预计到货</p>
-                  <p className="font-medium text-gray-900 mt-1">{showOrderDetailModal.estimatedDelivery || '-'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-500">总金额</p>
-                  <p className="font-bold text-blue-600 mt-1 text-xl">¥{showOrderDetailModal.totalAmount.toFixed(2)}</p>
-                </div>
-              </div>
-
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-gray-600">药品名称</th>
-                      <th className="px-4 py-3 text-center text-gray-600 w-20">数量</th>
-                      <th className="px-4 py-3 text-right text-gray-600 w-24">单价</th>
-                      <th className="px-4 py-3 text-right text-gray-600 w-24">小计</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {showOrderDetailModal.items.map(item => (
-                      <tr key={item.id}>
-                        <td className="px-4 py-3">{item.medicineName}</td>
-                        <td className="px-4 py-3 text-center">{item.quantity}</td>
-                        <td className="px-4 py-3 text-right">¥{item.unitPrice.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-right font-medium">¥{item.subtotal.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-gray-50">
-                    <tr>
-                      <td colSpan={3} className="px-4 py-3 text-right font-medium">合计</td>
-                      <td className="px-4 py-3 text-right font-bold text-blue-600">¥{showOrderDetailModal.totalAmount.toFixed(2)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {showOrderDetailModal.approvals.length > 0 && (
                 <div>
-                  <p className="text-sm font-medium text-gray-700 mb-2">审批记录</p>
-                  <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                    {showOrderDetailModal.approvals.map(ap => (
-                      <div key={ap.id} className="text-sm">
-                        <span className="font-medium">{ap.approver} ({ap.approverRole})</span>
-                        <span className={`ml-2 ${ap.status === 'approved' ? 'text-green-600' : 'text-red-600'}`}>
-                          {ap.status === 'approved' ? '同意' : '驳回'}
-                        </span>
-                        <span className="text-gray-500 ml-2">"{ap.opinion}"</span>
-                        <span className="text-gray-400 ml-2">{new Date(ap.approvedAt).toLocaleString()}</span>
+                  <p className="text-sm text-gray-500">创建人</p>
+                  <p className="font-medium text-gray-900">{showOrderDetailModal.createdBy}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500">创建时间</p>
+                  <p className="font-medium text-gray-900">
+                    {new Date(showOrderDetailModal.createdAt).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mb-6">
+                <h3 className="font-medium text-gray-700 mb-3">采购明细</h3>
+                <div className="bg-gray-50 rounded-lg overflow-hidden">
+                  <table className="w-full">
+                    <thead className="bg-gray-100">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-sm font-medium text-gray-600">药品名称</th>
+                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">数量</th>
+                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">单价</th>
+                        <th className="px-4 py-2 text-center text-sm font-medium text-gray-600">小计</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {showOrderDetailModal.items.map((item) => (
+                        <tr key={item.id}>
+                          <td className="px-4 py-3 font-medium text-gray-900">{item.medicineName}</td>
+                          <td className="px-4 py-3 text-center text-gray-600">{item.quantity}</td>
+                          <td className="px-4 py-3 text-center text-gray-600">¥{item.unitPrice}</td>
+                          <td className="px-4 py-3 text-center font-medium text-gray-900">¥{item.subtotal}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-gray-100">
+                      <tr>
+                        <td colSpan={3} className="px-4 py-3 text-right font-medium text-gray-900">合计</td>
+                        <td className="px-4 py-3 text-center font-bold text-blue-600">
+                          ¥{showOrderDetailModal.totalAmount.toLocaleString()}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+
+              {showOrderDetailModal.approvalOpinions && showOrderDetailModal.approvalOpinions.length > 0 && (
+                <div>
+                  <h3 className="font-medium text-gray-700 mb-3">审批记录</h3>
+                  <div className="space-y-3">
+                    {showOrderDetailModal.approvalOpinions.map((opinion, index) => (
+                      <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium text-gray-900">
+                            {opinion.level === 1 ? '药学部主任' : '分管院长'} - {opinion.approvedBy}
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${
+                            opinion.approved ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                          }`}>
+                            {opinion.approved ? '通过' : '驳回'}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-600">{opinion.opinion}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {new Date(opinion.timestamp).toLocaleString()}
+                        </p>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
             </div>
-            <div className="p-6 border-t border-gray-100 bg-gray-50 flex-shrink-0">
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setShowOrderDetailModal(null)}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-                >
-                  关闭
-                </button>
-              </div>
+
+            <div className="p-6 border-t border-gray-100 flex justify-end">
+              <button
+                onClick={() => setShowOrderDetailModal(null)}
+                className="px-6 py-2.5 border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                关闭
+              </button>
             </div>
           </div>
         </div>
@@ -910,3 +969,7 @@ export const Purchase = () => {
     </div>
   );
 };
+
+function React({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}

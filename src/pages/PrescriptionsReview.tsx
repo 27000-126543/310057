@@ -13,32 +13,88 @@ import {
   AlertOctagon,
   Info,
 } from 'lucide-react';
-import { useAppStore } from '@/stores/appStore';
-import { Prescription, PrescriptionWarning } from '@/types';
-import { calculatePediatricDosage } from '@/utils/validation';
+import { prescriptionApi } from '@/services/api';
+
+interface PrescriptionItem {
+  id: string;
+  medicineName: string;
+  medicineId: string;
+  specification: string;
+  quantity: number;
+  dosage: string;
+  frequency: string;
+  days: number;
+  price?: number;
+}
+
+interface PrescriptionWarning {
+  type: string;
+  severity: string;
+  medicines: string[];
+  description: string;
+}
+
+interface Prescription {
+  id: string;
+  prescriptionNo: string;
+  patientName: string;
+  patientAge: number;
+  patientWeight?: number;
+  patientGender?: string;
+  department: string;
+  doctor: string;
+  items: PrescriptionItem[];
+  warnings: PrescriptionWarning[];
+  status: string;
+  reviewedBy?: string;
+  reviewOpinion?: string;
+  reviewedAt?: string;
+  createdAt: string;
+}
+
+interface ValidationResult {
+  warnings: PrescriptionWarning[];
+  pediatricDosages?: Array<{
+    medicineName: string;
+    recommendedDose: number;
+    maxDose: number;
+    unit: string;
+    warning?: string;
+    actualDose: number;
+    isOverLimit: boolean;
+  }>;
+}
 
 export function PrescriptionsReview() {
-  const { prescriptions, user, reviewPrescription, validatePrescription } = useAppStore();
+  const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<{ name: string } | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPrescription, setSelectedPrescription] = useState<Prescription | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
-  const [validationWarnings, setValidationWarnings] = useState<PrescriptionWarning[]>([]);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [reviewOpinion, setReviewOpinion] = useState('');
-  const [pediatricDosageInfo, setPediatricDosageInfo] = useState<
-    Map<
-      string,
-      {
-        recommendedDose: number;
-        maxDose: number;
-        unit: string;
-        warning?: string;
-        actualDose: number;
-        isOverLimit: boolean;
-      }
-    >
-  >(new Map());
+
+  const loadPrescriptions = useCallback(async () => {
+    try {
+      const res = await prescriptionApi.getAll('pending');
+      setPrescriptions(res.data || []);
+    } catch (error) {
+      console.error('加载处方列表失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPrescriptions();
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      setCurrentUser(JSON.parse(userStr));
+    }
+  }, [loadPrescriptions]);
 
   const pendingPrescriptions = useMemo(() => {
     return prescriptions
@@ -54,60 +110,35 @@ export function PrescriptionsReview() {
     );
   }, [pendingPrescriptions, searchQuery]);
 
-  const runValidation = useCallback((prescription: Prescription) => {
+  const runValidation = useCallback(async (prescription: Prescription) => {
     setIsValidating(true);
-    setTimeout(() => {
-      const warnings = validatePrescription(prescription);
-      setValidationWarnings(warnings);
-
-      const dosageInfo = new Map<
-        string,
-        {
-          recommendedDose: number;
-          maxDose: number;
-          unit: string;
-          warning?: string;
-          actualDose: number;
-          isOverLimit: boolean;
-        }
-      >();
-
-      if (prescription.patientAge < 18 && prescription.patientWeight) {
-        prescription.items.forEach((item) => {
-          const info = calculatePediatricDosage(
-            item.medicineName,
-            prescription.patientAge,
-            prescription.patientWeight!
-          );
-          if (info) {
-            const freqMatch = item.frequency?.match(/(\d+)次/);
-            const dailyTimes = freqMatch ? parseInt(freqMatch[1]) : 1;
-            const actualDose = item.quantity * dailyTimes;
-            dosageInfo.set(item.id, {
-              ...info,
-              actualDose,
-              isOverLimit: actualDose > info.maxDose * 1.2,
-            });
-          }
-        });
+    try {
+      const res = await prescriptionApi.validate(prescription.id);
+      if (res.success) {
+        setValidationResult(res.data);
       }
-      setPediatricDosageInfo(dosageInfo);
+    } catch (error) {
+      console.error('处方校验失败:', error);
+    } finally {
       setIsValidating(false);
-    }, 500);
-  }, [validatePrescription]);
+    }
+  }, []);
 
   useEffect(() => {
     if (selectedPrescription && showDetailModal) {
       runValidation(selectedPrescription);
     } else {
-      setValidationWarnings([]);
-      setPediatricDosageInfo(new Map());
+      setValidationResult(null);
       setReviewOpinion('');
     }
   }, [selectedPrescription, showDetailModal, runValidation]);
 
   const allWarnings = useMemo(() => {
-    const combined = [...(selectedPrescription?.warnings || []), ...validationWarnings];
+    if (!selectedPrescription) return [];
+    const combined = [
+      ...(selectedPrescription?.warnings || []),
+      ...(validationResult?.warnings || []),
+    ];
     const unique = new Map<string, PrescriptionWarning>();
     combined.forEach((w) => {
       const key = `${w.type}-${w.medicines.join('-')}`;
@@ -116,11 +147,11 @@ export function PrescriptionsReview() {
       }
     });
     return Array.from(unique.values());
-  }, [selectedPrescription, validationWarnings]);
+  }, [selectedPrescription, validationResult]);
 
   const hasHighRiskWarning = allWarnings.some((w) => w.severity === 'high');
 
-  const handleReview = (prescription: Prescription, approved: boolean) => {
+  const handleReview = async (prescription: Prescription, approved: boolean) => {
     if (approved && hasHighRiskWarning) {
       const confirmed = window.confirm(
         `该处方存在 ${allWarnings.filter((w) => w.severity === 'high').length} 条高风险警示，确定审核通过吗？`
@@ -131,14 +162,19 @@ export function PrescriptionsReview() {
       alert('请填写驳回意见');
       return;
     }
-    reviewPrescription(
-      prescription.id,
-      user?.name || '系统',
-      approved ? 'reviewed' : 'rejected',
-      reviewOpinion || (approved ? '处方审核通过，用药合理' : '驳回')
-    );
-    setSelectedPrescription(null);
-    setShowDetailModal(false);
+    try {
+      await prescriptionApi.review(prescription.id, {
+        reviewedBy: currentUser?.name || '系统',
+        status: approved ? 'reviewed' : 'rejected',
+        opinion: reviewOpinion || (approved ? '处方审核通过，用药合理' : '驳回'),
+      });
+      setPrescriptions((prev) => prev.filter((p) => p.id !== prescription.id));
+      setSelectedPrescription(null);
+      setShowDetailModal(false);
+    } catch (error) {
+      console.error('审核失败:', error);
+      alert('审核失败，请重试');
+    }
   };
 
   const getWarningSeverityClass = (severity: string) => {
@@ -167,6 +203,14 @@ export function PrescriptionsReview() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6">
       <div className="mb-6">
@@ -194,34 +238,14 @@ export function PrescriptionsReview() {
               <p className="text-sm text-gray-500">高风险处方</p>
               <p className="text-2xl font-bold text-red-600 mt-1">
                 {
-                  pendingPrescriptions.filter((p) => {
-                    const warnings = validatePrescription(p);
-                    return warnings.some((w) => w.severity === 'high');
-                  }).length
+                  pendingPrescriptions.filter((p) =>
+                    p.warnings.some((w) => w.severity === 'high')
+                  ).length
                 }
               </p>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center">
               <AlertOctagon className="w-6 h-6 text-red-600" />
-            </div>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">今日已审核</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">
-                {
-                  prescriptions.filter(
-                    (p) =>
-                      (p.status === 'reviewed' || p.status === 'rejected') &&
-                      new Date(p.createdAt).toDateString() === new Date().toDateString()
-                  ).length
-                }
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-              <CheckCircle className="w-6 h-6 text-green-600" />
             </div>
           </div>
         </div>
@@ -235,6 +259,19 @@ export function PrescriptionsReview() {
             </div>
             <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
               <Baby className="w-6 h-6 text-purple-600" />
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-500">药品种类</p>
+              <p className="text-2xl font-bold text-cyan-600 mt-1">
+                {new Set(pendingPrescriptions.flatMap((p) => p.items.map((i) => i.medicineName))).size}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-cyan-100 rounded-xl flex items-center justify-center">
+              <Pill className="w-6 h-6 text-cyan-600" />
             </div>
           </div>
         </div>
@@ -471,14 +508,16 @@ export function PrescriptionsReview() {
                     </div>
                   )}
 
-                  {selectedPrescription.patientAge < 18 && pediatricDosageInfo.size > 0 && (
+                  {selectedPrescription.patientAge < 18 && validationResult?.pediatricDosages && validationResult.pediatricDosages.length > 0 && (
                     <div className="mb-6">
                       <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
                         <Baby className="w-5 h-5 text-purple-500" />
                         儿童用量自动计算
-                        <span className="text-xs text-gray-500 font-normal">
-                          基于体重{selectedPrescription.patientWeight}kg计算
-                        </span>
+                        {selectedPrescription.patientWeight && (
+                          <span className="text-xs text-gray-500 font-normal">
+                            基于体重{selectedPrescription.patientWeight}kg计算
+                          </span>
+                        )}
                       </h3>
                       <div className="bg-gray-50 rounded-lg overflow-hidden">
                         <table className="w-full">
@@ -505,52 +544,48 @@ export function PrescriptionsReview() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-purple-100">
-                            {selectedPrescription.items.map((item) => {
-                              const info = pediatricDosageInfo.get(item.id);
-                              if (!info) return null;
-                              return (
-                                <tr key={item.id} className="hover:bg-white">
-                                  <td className="px-4 py-3 font-medium text-gray-900">
-                                    {item.medicineName}
-                                  </td>
-                                  <td className="px-4 py-3 text-center">
-                                    <span
-                                      className={
-                                        info.isOverLimit
-                                          ? 'text-red-600 font-bold'
-                                          : 'text-gray-900'
-                                      }
-                                    >
-                                      {info.actualDose}
+                            {validationResult.pediatricDosages.map((dosage, index) => (
+                              <tr key={index} className="hover:bg-white">
+                                <td className="px-4 py-3 font-medium text-gray-900">
+                                  {dosage.medicineName}
+                                </td>
+                                <td className="px-4 py-3 text-center">
+                                  <span
+                                    className={
+                                      dosage.isOverLimit
+                                        ? 'text-red-600 font-bold'
+                                        : 'text-gray-900'
+                                    }
+                                  >
+                                    {dosage.actualDose}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-center text-green-600">
+                                  {dosage.recommendedDose}
+                                </td>
+                                <td className="px-4 py-3 text-center text-orange-600">
+                                  {dosage.maxDose}
+                                </td>
+                                <td className="px-4 py-3 text-center text-gray-600 text-sm">
+                                  {dosage.unit}
+                                </td>
+                                <td className="px-4 py-3 text-center">
+                                  {dosage.warning ? (
+                                    <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
+                                      {dosage.warning}
                                     </span>
-                                  </td>
-                                  <td className="px-4 py-3 text-center text-green-600">
-                                    {info.recommendedDose}
-                                  </td>
-                                  <td className="px-4 py-3 text-center text-orange-600">
-                                    {info.maxDose}
-                                  </td>
-                                  <td className="px-4 py-3 text-center text-gray-600 text-sm">
-                                    {info.unit}
-                                  </td>
-                                  <td className="px-4 py-3 text-center">
-                                    {info.warning ? (
-                                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
-                                        {info.warning}
-                                      </span>
-                                    ) : info.isOverLimit ? (
-                                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
-                                        剂量超标
-                                      </span>
-                                    ) : (
-                                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
-                                        剂量合理
-                                      </span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
+                                  ) : dosage.isOverLimit ? (
+                                    <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs font-medium">
+                                      剂量超标
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                      剂量合理
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
@@ -628,7 +663,7 @@ export function PrescriptionsReview() {
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <Info className="w-4 h-4" />
                 <span>
-                  审核药师：{user?.name || '未登录'}
+                  审核药师：{currentUser?.name || '未登录'}
                 </span>
               </div>
               <div className="flex gap-3">
